@@ -25,13 +25,23 @@ func main() {
 	}
 	load.WithEtcd(e1)
 
-	// Bring up a second node (joins under load) and load it too.
-	e2 := libetcd.New().WithContext(ctx)
-	if err := e2.Join(e1.Client()); err != nil {
-		log.Fatal(err)
+	// Grow the cluster under load: join a new node every 2s until the deadline.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return // cancelling ctx gracefully stops every node
+		case <-ticker.C:
+			n := libetcd.New().WithContext(ctx)
+			if err := n.Join(e1.Client()); err != nil {
+				if ctx.Err() != nil {
+					return // test over
+				}
+				log.Printf("join: %v", err)
+				continue
+			}
+			load.WithEtcd(n)
+		}
 	}
-	load.WithEtcd(e2)
-
-	// Run until the 15s deadline; cancelling ctx gracefully stops both nodes.
-	<-ctx.Done()
 }
