@@ -6,51 +6,51 @@ import (
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-// TestServerMints checks the config pipeline produces a server: a valid chain
-// mints a non-nil *etcdserver.EtcdServer (default name matches the default
-// InitialCluster).
+// startedNode builds a node on a temp dir, starts it (auto-binding loopback
+// listeners), and registers Stop for cleanup. Going through Start/Stop releases
+// the backend and WAL file handles, which matters on Windows where t.TempDir's
+// RemoveAll fails if the WAL is still open.
+func startedNode(t *testing.T) *v1alpha1.EtcdImpl {
+	t.Helper()
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir())
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Stop() })
+	return e
+}
+
+// TestServerMints checks the config pipeline produces a non-nil server.
 func TestServerMints(t *testing.T) {
-	b := v1alpha1.New()
-	b.WithDir(t.TempDir())
-	srv := b.Server()
-	if srv == nil {
+	if startedNode(t).Server() == nil {
 		t.Fatal("nil server")
 	}
-	srv.Cleanup()
 }
 
 // TestServerOnce checks Server mints once and caches (serverOnce).
 func TestServerOnce(t *testing.T) {
-	b := v1alpha1.New()
-	b.WithDir(t.TempDir())
-	a := b.Server()
-	c := b.Server()
-	if a == nil {
+	e := startedNode(t)
+	if a, c := e.Server(), e.Server(); a == nil {
 		t.Fatal("nil server")
-	}
-	if a != c {
+	} else if a != c {
 		t.Fatal("Server minted twice; expected serverOnce cache")
 	}
-	a.Cleanup()
 }
 
-// TestLoopbackAndHandlers checks the read-side accessors mint non-nil from a
-// valid builder.
+// TestLoopbackAndHandlers checks the read-side accessors mint non-nil.
 func TestLoopbackAndHandlers(t *testing.T) {
-	b := v1alpha1.New()
-	b.WithDir(t.TempDir())
-	defer b.Server().Cleanup()
-
-	if b.Loopback() == nil {
+	e := startedNode(t)
+	if e.Loopback() == nil {
 		t.Fatal("nil Loopback")
 	}
-	if b.GrpcServer() == nil {
+	if e.GrpcServer() == nil {
 		t.Fatal("nil GrpcServer")
 	}
-	if b.PeerHandler() == nil {
+	if e.PeerHandler() == nil {
 		t.Fatal("nil PeerHandler")
 	}
-	if b.ClientHandler() == nil {
+	if e.ClientHandler() == nil {
 		t.Fatal("nil ClientHandler")
 	}
 }
