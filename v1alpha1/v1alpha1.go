@@ -94,6 +94,7 @@ func New() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
 	cfg.Name = defaultName()
+	cfg.StrictReconfigCheck = false
 	cfg.LogLevel = "fatal" // quiet by default; override with WithLogLevel
 	b := &EtcdImpl{
 		cfg:    cfg,

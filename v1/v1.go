@@ -81,6 +81,10 @@ type Builder interface {
 	WithPeerListener(l net.Listener) Etcd
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
 	WithClusterToken(token string) Etcd
+	// WithStrict toggles etcd's strict reconfiguration check, which rejects
+	// membership changes that would risk quorum. Off by default (eases rapid
+	// joins); set true for production safety.
+	WithStrict(strict bool) Etcd
 	// WithLogLevel sets the server log level (e.g. "error", "warn", "info").
 	WithLogLevel(level string) Etcd
 	// WithContext ties the node's lifetime to ctx: when ctx is cancelled, the

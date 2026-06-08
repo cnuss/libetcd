@@ -56,6 +56,12 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 	return b
 }
 
+// WithStrict toggles etcd's strict reconfiguration check.
+func (b *EtcdImpl) WithStrict(strict bool) v1.Etcd {
+	b.mutate(func() error { b.cfg.StrictReconfigCheck = strict; return nil })
+	return b
+}
+
 // WithLogLevel sets the server log level.
 func (b *EtcdImpl) WithLogLevel(level string) v1.Etcd {
 	b.mutate(func() error { b.cfg.LogLevel = level; return nil })
