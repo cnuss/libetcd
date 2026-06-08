@@ -11,11 +11,13 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Façade (`New`)                                 | [`lib.go`](./lib.go)                                             |
-| Stable interfaces (`Builder` + `Etcd`)         | [`v1/api.go`](./v1/api.go)                                       |
-| Implementation + `Start` (embed wrapper)       | [`v1alpha1/impl.go`](./v1alpha1/impl.go)                         |
-| Builder methods (`WithName`, `WithPeers`, …)   | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Unit tests (Put/Get round-trip)                | [`v1alpha1/builder_test.go`](./v1alpha1/builder_test.go)         |
-| godoc examples                                 | [`v1/example_test.go`](./v1/example_test.go)                     |
+| Interfaces (`Accessor`/`Builder`/`Executor`/`Etcd`) | [`v1/v1.go`](./v1/v1.go)                                    |
+| Type (`EtcdImpl`) + `New`                      | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
+| Builder methods + config machinery             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
+| Accessor handles (Server/Client/handlers…)     | [`v1alpha1/accessor.go`](./v1alpha1/accessor.go)                |
+| Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
+| gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
+| Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
@@ -38,7 +40,7 @@ github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
 ```
 
 Application code imports the root (`libetcd.New()…`). Code that needs to declare
-types against the interfaces imports `v1`. Direct access to the `BuilderImpl`
+types against the interfaces imports `v1`. Direct access to the `EtcdImpl`
 struct lives in `v1alpha1`. The `v1alpha1` package wraps
 `go.etcd.io/etcd/server/v3/embed` — keep the `embed`-specific glue there, behind
 the stable `v1` surface.
@@ -50,15 +52,14 @@ Requires Go 1.23 or later (the floor etcd's `embed` package needs).
 ```sh
 git clone https://github.com/cnuss/libetcd.git
 cd libetcd
-make test   # library unit tests + godoc examples (fast, in-package)
+make test   # library unit tests (fast, in-package)
 make e2e    # builds and runs every example binary
 ```
 
 Run a specific example locally:
 
 ```sh
-make run basic
-make run cluster
+make run single-node
 ```
 
 ## Before you push
@@ -77,10 +78,9 @@ Easy to get wrong from the diff alone:
 - **`examples/` is intentionally duplicated.** Each `main.go` is a
   copy-pasteable starter; no shared internal package. Don't refactor it into
   one.
-- **godoc examples start a real node.** The `Example*` funcs in `v1` boot an
-  embedded etcd on an auto-selected port (`WithClientPort(0)`), so they take a
-  second or two and need a free loopback port. See
-  [`v1/example_test.go`](./v1/example_test.go).
+- **`v1alpha1` tests start a real node.** They mint and (in `executor_test.go`)
+  start an embedded etcd, so they take a second or two and need a free loopback
+  port. Use `WithDir(t.TempDir())` and let `Start` auto-bind listeners.
 - **e2e builds binaries at runtime**, so the test cache can't see example
   source changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in

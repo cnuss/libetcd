@@ -1,83 +1,34 @@
 package v1alpha1_test
 
 import (
-	"context"
-	"strings"
+	"net"
 	"testing"
-	"time"
 
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-// startNode boots a single-node cluster on auto-selected ports under a temp data
-// dir, returning the running handle. Port 0 keeps concurrent tests from
-// colliding on a fixed port.
-func startNode(t *testing.T) interface {
-	Endpoints() []string
-	Close() error
-} {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
-
-	e, err := v1alpha1.New().
-		WithName("test").
-		WithDir(t.TempDir()).
-		WithClientPort(0).
-		WithPeerPort(0).
-		Start(ctx)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	return e
-}
-
-func TestPutGetRoundTrip(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	e, err := v1alpha1.New().
-		WithName("test").
-		WithDir(t.TempDir()).
-		WithClientPort(0).
-		WithPeerPort(0).
-		Start(ctx)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer e.Close()
-
-	if _, err := e.Client().Put(ctx, "k", "v"); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	resp, err := e.Client().Get(ctx, "k")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
-		t.Fatalf("Get returned %v, want value %q", resp.Kvs, "v")
+// TestServerNilOnBadConfig checks Server returns nil when the config was latched
+// invalid (recover guard turns the Validate panic into a latched cause).
+func TestServerNilOnBadConfig(t *testing.T) {
+	b := v1alpha1.New()
+	b.WithLogLevel("not-a-level")
+	if b.Server() != nil {
+		t.Fatal("expected nil server for invalid config")
 	}
 }
 
-func TestEndpointsResolvedFromAutoPort(t *testing.T) {
-	e := startNode(t)
-	defer e.Close()
+// TestAutoSyncInitialCluster checks the single-member auto-sync keeps the
+// InitialCluster consistent when the name and peer URL change, so minting still
+// succeeds (without it, NewServer fails: local name not in InitialCluster).
+func TestAutoSyncInitialCluster(t *testing.T) {
+	lp, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer lp.Close()
 
-	eps := e.Endpoints()
-	if len(eps) == 0 {
-		t.Fatal("Endpoints() empty")
+	b := v1alpha1.New()
+	b.WithDir(t.TempDir()).WithName("n1").WithPeerListener(lp)
+	srv := b.Server()
+	if srv == nil {
+		t.Fatal("auto-sync failed: nil server after WithName + WithPeerListener")
 	}
-	for _, ep := range eps {
-		// Port 0 must have been resolved to a concrete bound port.
-		if strings.HasSuffix(ep, ":0") {
-			t.Errorf("endpoint %q still has unresolved :0 port", ep)
-		}
-	}
-}
-
-func TestCloseIsClean(t *testing.T) {
-	e := startNode(t)
-	if err := e.Close(); err != nil {
-		t.Errorf("Close: %v", err)
-	}
+	srv.Cleanup()
 }

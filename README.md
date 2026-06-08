@@ -9,15 +9,16 @@
 
 `libetcd` is a thin, developer-friendly SDK for running **embedded etcd**: it
 wraps [`go.etcd.io/etcd/server/v3/embed`](https://pkg.go.dev/go.etcd.io/etcd/server/v3/embed)
-behind a fluent builder so a Go program can spin up a real etcd node — or a
-multi-node cluster — in-process and get back a ready-to-use `clientv3.Client`.
+behind a fluent builder so a Go program can spin up a real etcd node in-process
+and get back a ready-to-use `clientv3.Client`.
 
 It ships as stable/alpha versioned packages (`v1` stable contract, `v1alpha1`
 mutable implementation), with CI, CodeQL, OpenSSF Scorecard, cosign-signed
 releases, Dependabot, examples, and an e2e harness.
 
-The API is a fluent builder: `New()` configures a node with `With*` methods and
-`Start(ctx)` boots it.
+The API is a fluent builder: `New()` configures a node with `With*` methods,
+`Start()` boots it, and `Stop()` shuts it down. The `With*` setters mutate the
+node in place and chain.
 
 ## Quick Start
 
@@ -37,27 +38,24 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // cancelling the context gracefully stops the node
 
-	// Port 0 picks a free port; omit WithDir for a throwaway temp data dir.
-	e, err := libetcd.New().
-		WithName("greeter").
-		WithClientPort(0).
-		WithPeerPort(0).
-		Start(ctx)
-	if err != nil {
+	// Defaults everything: a temp data dir and free loopback ports auto-bound by Start.
+	e := libetcd.New().WithContext(ctx)
+	if err := e.Start(); err != nil {
 		log.Fatal(err)
 	}
-	defer e.Close()
 
-	e.Client().Put(ctx, "greeting", "hello world")
-	resp, _ := e.Client().Get(ctx, "greeting")
+	cli := e.Client()
+	cli.Put(ctx, "greeting", "hello world")
+	resp, _ := cli.Get(ctx, "greeting")
 
 	fmt.Printf("greeting: %s\n", resp.Kvs[0].Value) // greeting: hello world
 }
 ```
 
-(Full source: [`examples/basic/main.go`](./examples/basic/main.go).)
+(Full source: [`examples/single-node/main.go`](./examples/single-node/main.go).)
 
 ## Layout
 
@@ -71,63 +69,78 @@ github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
 ```
 
 Application code imports the root (`libetcd.New()…`). Code that needs to declare
-types against the interfaces imports `v1`. Direct access to the `BuilderImpl`
-struct lives in `v1alpha1`.
+types against the interfaces imports `v1`. Direct access to the `EtcdImpl` struct
+lives in `v1alpha1`.
 
 For the file-by-file map, see
 [CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).
 
 ## API at a glance
 
+`New()` returns the full node — an `Etcd`, composed of three interfaces:
+
 ```go
-type Builder interface {
-    WithName(name string) Builder              // node (member) name; default "default"
-    WithDir(dir string) Builder                // data dir; default: a fresh temp dir
-    WithClientPort(port int) Builder           // localhost client port; 0 = pick free; default 2379
-    WithPeerPort(port int) Builder             // localhost peer port;  0 = pick free; default 2380
-    WithClientURL(urls ...string) Builder      // advanced: explicit client URLs
-    WithPeerURL(urls ...string) Builder        // advanced: explicit peer URLs
-    WithPeers(peers map[string]string) Builder // multi-node initial cluster: name -> peer URL
-    WithClusterToken(token string) Builder     // initial-cluster token; default "libetcd-cluster"
-    WithExistingCluster() Builder              // join an existing cluster instead of bootstrapping
-    WithLogLevel(level string) Builder         // server log level; default "error"
-    Start(ctx context.Context) (Etcd, error)   // terminal: boots, waits ready, dials a client
-}
+func New() Etcd
 
 type Etcd interface {
-    Client() *clientv3.Client // in-process-wired client to this node
-    Endpoints() []string      // actual bound client endpoints (ports resolved)
-    Server() *embed.Etcd      // escape hatch to the raw embed handle
-    Close() error             // closes the client, then stops the server
+    Accessor // read-side handles
+    Builder  // configuration
+    Executor // lifecycle
 }
 
-func New() Builder   // unconfigured builder
+// Builder — configure; each returns Builder, mutating the node in place.
+type Builder interface {
+    WithName(name string) Builder                // member name; default "default"
+    WithDir(dir string) Builder                  // data dir; default: a fresh temp dir
+    WithClientListener(l net.Listener) Builder   // client URL from a listener (https if TLS-wrapped)
+    WithPeerListener(l net.Listener) Builder      // peer URL from a listener
+    WithClusterToken(token string) Builder        // initial-cluster token; default "libetcd-cluster"
+    WithLogLevel(level string) Builder            // server log level; default "fatal"
+    WithClientHTTP(srv *http.Server) Builder      // supply the client (v3 API) http.Server
+    WithPeerHTTP(srv *http.Server) Builder        // supply the peer (raft) http.Server
+}
+
+// Executor — lifecycle.
+type Executor interface {
+    Start() error // mint + start; auto-binds any unset listener; serves client/peer HTTP
+    Stop() error  // best-effort shutdown
+}
+
+// Accessor — read-side handles, minted lazily and cached.
+type Accessor interface {
+    Server() *etcdserver.EtcdServer     // the minted server (nil on bad config)
+    GrpcServer() *grpc.Server           // v3 gRPC server (election + lock registered)
+    Loopback() *clientv3.Client         // in-process client
+    Client() (*clientv3.Client, error)  // networked client (dials client URLs)
+    ClientHandler() http.Handler        // gRPC (+REST gateway) handler, h2c-wrapped
+    PeerHandler() http.Handler          // raft peer protocol handler
+    ClientHTTP() *http.Server           // client http.Server (provided or default)
+    PeerHTTP() *http.Server             // peer http.Server (provided or default)
+    ClientListener() net.Listener       // listener set via WithClientListener, or nil
+    PeerListener() net.Listener         // listener set via WithPeerListener, or nil
+}
 ```
 
-Bring up a multi-node cluster by listing every member's peer URL with
-`WithPeers` (see [`examples/cluster`](./examples/cluster/main.go)); a node with
-no peers starts as a single-member cluster.
+Single-node only for now; multi-node cluster bootstrap lands in a follow-up.
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example   | Demonstrates                                                       |
-| --------- | ----------------------------------------------------------------- |
-| `basic`   | Smallest wiring — start one node, `Put`/`Get`, `Close`.           |
-| `cluster` | A 3-node in-process cluster via `WithPeers`; write one, read another. |
+| Example       | Demonstrates                                            |
+| ------------- | ------------------------------------------------------ |
+| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`. |
 
-Run one locally:
+Run it locally:
 
 ```sh
-make run basic
-make run cluster
+make run single-node
 ```
 
 ## Testing
 
 ```sh
-make test   # library unit tests + godoc examples (fast, in-package)
+make test   # library unit tests (fast, in-package)
 make e2e    # builds and runs every example binary, asserts its output
 ```
 
