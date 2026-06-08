@@ -1,67 +1,39 @@
 package v1alpha1_test
 
 import (
+	"net"
 	"testing"
 
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-func TestBuildCarriesNameAndValue(t *testing.T) {
-	res := v1alpha1.New[string]().
-		WithName("greeting").
-		WithValue("hello").
-		Build()
-
-	if res.Name != "greeting" {
-		t.Errorf("Name = %q, want %q", res.Name, "greeting")
-	}
-	if res.Value != "hello" {
-		t.Errorf("Value = %q, want %q", res.Value, "hello")
+// TestServerNilOnBadConfig checks Server returns nil when the config was latched
+// invalid (recover guard turns the Validate panic into a latched cause).
+func TestServerNilOnBadConfig(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithLogLevel("not-a-level")
+	if e.Server() != nil {
+		t.Fatal("expected nil server for invalid config")
 	}
 }
 
-func TestZeroValueWhenUnset(t *testing.T) {
-	res := v1alpha1.New[int]().Build()
-
-	if res.Name != "" {
-		t.Errorf("Name = %q, want empty", res.Name)
+// TestAutoSyncInitialCluster checks the single-member auto-sync keeps the
+// InitialCluster consistent when the name and peer URL change, so the node
+// starts (without it, NewServer fails: local name not in InitialCluster).
+func TestAutoSyncInitialCluster(t *testing.T) {
+	lp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.Value != 0 {
-		t.Errorf("Value = %d, want 0", res.Value)
+
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithName("n1").WithPeerListener(lp)
+	if err := e.Start(); err != nil {
+		t.Fatalf("auto-sync failed, Start: %v", err)
 	}
-}
+	t.Cleanup(func() { _ = e.Stop() })
 
-func TestNameAccessor(t *testing.T) {
-	b := v1alpha1.New[int]().WithName("widget")
-	if got := b.Name(); got != "widget" {
-		t.Errorf("Name() = %q, want %q", got, "widget")
+	if e.Server() == nil {
+		t.Fatal("nil server after WithName + WithPeerListener")
 	}
-}
-
-func TestBuildIsStable(t *testing.T) {
-	b := v1alpha1.New[string]().WithValue("first")
-	first := b.Build()
-
-	// Mutating after the first Build must not change a subsequent Build: the
-	// result is cached on the first call.
-	b.WithValue("second")
-	second := b.Build()
-
-	if first != second {
-		t.Errorf("Build not stable: first=%+v second=%+v", first, second)
-	}
-}
-
-// FuzzBuildName checks that any name round-trips through the builder unchanged.
-func FuzzBuildName(f *testing.F) {
-	f.Add("")
-	f.Add("greeting")
-	f.Add("emoji-✓")
-
-	f.Fuzz(func(t *testing.T, name string) {
-		res := v1alpha1.New[int]().WithName(name).Build()
-		if res.Name != name {
-			t.Errorf("Name = %q, want %q", res.Name, name)
-		}
-	})
 }

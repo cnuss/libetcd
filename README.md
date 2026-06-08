@@ -7,13 +7,18 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cnuss/libetcd/badge)](https://scorecard.dev/viewer/?uri=github.com/cnuss/libetcd)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-`libetcd` is a thin, stable façade over stable/alpha versioned packages
-(`v1` stable contract, `v1alpha1` mutable implementation), with CI, CodeQL,
-OpenSSF Scorecard, cosign-signed releases, Dependabot, examples, and an e2e
-harness.
+`libetcd` is a thin, developer-friendly SDK for running **embedded etcd**: it
+wraps [`go.etcd.io/etcd/server/v3/embed`](https://pkg.go.dev/go.etcd.io/etcd/server/v3/embed)
+behind a fluent builder so a Go program can spin up a real etcd node in-process
+and get back a ready-to-use `clientv3.Client`.
 
-The API is a generic builder: `New[T]()` configures with `With*` methods and
-finalizes with `Build()`.
+It ships as stable/alpha versioned packages (`v1` stable contract, `v1alpha1`
+mutable implementation), with CI, CodeQL, OpenSSF Scorecard, cosign-signed
+releases, Dependabot, examples, and an e2e harness.
+
+The API is a fluent builder: `New()` configures a node with `With*` methods,
+`Start()` boots it, and `Stop()` shuts it down. The `With*` setters mutate the
+node in place and chain.
 
 ## Quick Start
 
@@ -25,22 +30,32 @@ go get github.com/cnuss/libetcd
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 
 	"github.com/cnuss/libetcd"
 )
 
 func main() {
-	res := libetcd.New[string]().
-		WithName("greeting").
-		WithValue("hello world").
-		Build()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // cancelling the context gracefully stops the node
 
-	fmt.Printf("%s: %s\n", res.Name, res.Value) // greeting: hello world
+	// Defaults everything: a temp data dir and free loopback ports auto-bound by Start.
+	e := libetcd.New().WithContext(ctx)
+	if err := e.Start(); err != nil {
+		log.Fatal(err)
+	}
+
+	cli := e.Client()
+	cli.Put(ctx, "greeting", "hello world")
+	resp, _ := cli.Get(ctx, "greeting")
+
+	fmt.Printf("greeting: %s\n", resp.Kvs[0].Value) // greeting: hello world
 }
 ```
 
-(Full source: [`examples/basic/main.go`](./examples/basic/main.go).)
+(Full source: [`examples/single-node/main.go`](./examples/single-node/main.go).)
 
 ## Layout
 
@@ -48,56 +63,84 @@ Three packages, stable/alpha versioning:
 
 ```
 github.com/cnuss/libetcd           — root façade. Stable surface (New).
-github.com/cnuss/libetcd/v1        — stable Builder[T] interface + Result[T].
+github.com/cnuss/libetcd/v1        — stable Builder + Etcd interfaces.
 github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`libetcd.New[T]()…`). Code that needs to
-declare types against the interface imports `v1`. Direct access to the
-`BuilderImpl[T]` struct lives in `v1alpha1`.
+Application code imports the root (`libetcd.New()…`). Code that needs to declare
+types against the interfaces imports `v1`. Direct access to the `EtcdImpl` struct
+lives in `v1alpha1`.
 
 For the file-by-file map, see
 [CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).
 
 ## API at a glance
 
+`New()` returns the full node — an `Etcd`, composed of three interfaces:
+
 ```go
-type Builder[T any] interface {
-    WithName(name string) Builder[T]   // display name carried into the Result
-    WithValue(v T) Builder[T]          // the payload Build produces
-    Build() Result[T]                  // terminal: assembles and returns
-    Name() string                      // configured name (empty if unset)
+func New() Etcd
+
+type Etcd interface {
+    Accessor // read-side handles
+    Builder  // configuration
+    Executor // lifecycle
 }
 
-type Result[T any] struct {
-    Name  string `json:"name,omitempty"`
-    Value T      `json:"value"`
+// Builder — configure; each returns Builder, mutating the node in place.
+type Builder interface {
+    WithName(name string) Builder                // member name; default "default"
+    WithDir(dir string) Builder                  // data dir; default: a fresh temp dir
+    WithClientListener(l net.Listener) Builder   // client URL from a listener (https if TLS-wrapped)
+    WithPeerListener(l net.Listener) Builder      // peer URL from a listener
+    WithClusterToken(token string) Builder        // initial-cluster token; default "libetcd-cluster"
+    WithLogLevel(level string) Builder            // server log level; default "fatal"
+    WithClientHTTP(srv *http.Server) Builder      // supply the client (v3 API) http.Server
+    WithPeerHTTP(srv *http.Server) Builder        // supply the peer (raft) http.Server
 }
 
-func New[T any]() Builder[T]   // unconfigured builder
+// Executor — lifecycle.
+type Executor interface {
+    Start() error // mint + start; auto-binds any unset listener; serves client/peer HTTP
+    Stop() error  // best-effort shutdown
+}
+
+// Accessor — read-side handles, minted lazily and cached.
+type Accessor interface {
+    Server() *etcdserver.EtcdServer     // the minted server (nil on bad config)
+    GrpcServer() *grpc.Server           // v3 gRPC server (election + lock registered)
+    Loopback() *clientv3.Client         // in-process client
+    Client() (*clientv3.Client, error)  // networked client (dials client URLs)
+    ClientHandler() http.Handler        // gRPC (+REST gateway) handler, h2c-wrapped
+    PeerHandler() http.Handler          // raft peer protocol handler
+    ClientHTTP() *http.Server           // client http.Server (provided or default)
+    PeerHTTP() *http.Server             // peer http.Server (provided or default)
+    ClientListener() net.Listener       // listener set via WithClientListener, or nil
+    PeerListener() net.Listener         // listener set via WithPeerListener, or nil
+}
 ```
+
+Single-node only for now; multi-node cluster bootstrap lands in a follow-up.
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example | Demonstrates                                          |
-| ------- | ----------------------------------------------------- |
-| `basic` | Smallest wiring — `New` + `WithValue` + `Build`.      |
-| `named` | A typed struct payload carried through `WithValue`.   |
+| Example       | Demonstrates                                            |
+| ------------- | ------------------------------------------------------ |
+| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`. |
 
-Run one locally:
+Run it locally:
 
 ```sh
-make run basic
-make run named
+make run single-node
 ```
 
 ## Testing
 
 ```sh
-make test   # library unit + fuzz tests (fast, in-package)
+make test   # library unit tests (fast, in-package)
 make e2e    # builds and runs every example binary, asserts its output
 ```
 

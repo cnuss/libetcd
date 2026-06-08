@@ -65,8 +65,7 @@ func TestExamples(t *testing.T) {
 		name string
 		want string
 	}{
-		{"basic", "greeting: hello world"},
-		{"named", "widget: {ID:7"},
+		{"single-node", "greeting: hello world"},
 	}
 	for _, tc := range cases {
 		tc := tc

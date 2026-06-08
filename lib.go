@@ -1,18 +1,24 @@
-// Package libetcd is a thin, stable façade over stable/alpha versioned packages.
+// Package libetcd is a thin, developer-friendly SDK for running embedded etcd.
+//
+// It wraps go.etcd.io/etcd/server/v3/embed behind a fluent builder: configure a
+// node with With* methods, Start it, and use the in-process loopback client.
+//
+//	e := libetcd.New()
+//	e.WithDir("/tmp/data").WithClientListener(lc)
+//	if err := e.Start(); err != nil { /* ... */ }
+//	defer e.Stop()
+//	e.Loopback().Put(ctx, "k", "v")
 //
 // The package is split into three pieces:
 //
 //   - libetcd (this package) — thin façade exposing New. Stable surface for
 //     application code.
-//   - github.com/cnuss/libetcd/v1 — the stable Builder[T] interface and Result
-//     type. Application code that wants to declare types against the interface
-//     imports this.
+//   - github.com/cnuss/libetcd/v1 — the stable Accessor, Builder, Executor, and
+//     Etcd interfaces. Application code that wants to declare types against the
+//     contract imports this.
 //   - github.com/cnuss/libetcd/v1alpha1 — the current implementation. Internals
-//     (BuilderImpl, helpers) may change between alpha revisions; pin only if
-//     you need direct access to the struct.
-//
-// New[T]() returns a Builder[T] you configure with With* methods and finalize
-// with Build().
+//     may change between alpha revisions; pin only if you need the concrete
+//     types.
 package libetcd
 
 import (
@@ -20,10 +26,13 @@ import (
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-// New returns an unconfigured Builder for values of type T. Configure it with
-// the With* methods, then call Build.
+// New returns an unconfigured embedded etcd node. Configure it with the With*
+// methods (they mutate in place and chain), then call Start; Stop shuts it down.
 //
-//	res := libetcd.New[string]().WithName("greeting").WithValue("hello").Build()
-func New[T any]() v1.Builder[T] {
-	return v1alpha1.New[T]()
+//	e := libetcd.New()
+//	e.WithDir("/tmp/data")
+//	if err := e.Start(); err != nil { /* ... */ }
+//	defer e.Stop()
+func New() v1.Etcd {
+	return v1alpha1.New()
 }
