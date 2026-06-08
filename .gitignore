@@ -1,0 +1,37 @@
+# Compiled binaries / shared objects
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage output
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Local build artifacts
+/bin/
+/dist/
+/build/
+
+# Go workspace files (per-developer)
+go.work
+go.work.sum
+
+# IDE / editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local config / secrets
+.env
+.env.*
+*.local
+
+# Claude Code local state
+.claude/

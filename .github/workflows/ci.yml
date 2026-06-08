@@ -1,0 +1,188 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    # Defaults are [opened, synchronize, reopened]. Add ready_for_review
+    # so a draft -> ready transition re-runs CI without an empty push;
+    # keep synchronize explicit so every new commit on the PR triggers a
+    # fresh run.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025-vs2026]
+        # "min" reads the floor from go.mod (the `go X.Y` directive); "stable"
+        # is whatever setup-go's `stable` alias resolves to. Keeping "min"
+        # symbolic avoids drift between go.mod and the workflow when the floor
+        # is bumped.
+        go: [min, stable]
+    defaults:
+      run:
+        # bash on Windows runners comes from git-for-windows (MSYS) and matches
+        # the Linux job's shell semantics, so steps below don't need per-OS
+        # branching for $(...) / [ -n ... ] / piping.
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: resolve go version
+        id: goversion
+        # "min" → the `go X.Y` directive in go.mod (the declared floor).
+        # Anything else (e.g. "stable") passes through unchanged so setup-go's
+        # aliases keep working.
+        run: |
+          if [ "${{ matrix.go }}" = "min" ]; then
+            v=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ matrix.go }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ steps.goversion.outputs.version }}
+          cache: true
+
+      - name: gofmt
+        # Linux-only: actions/checkout on Windows normalizes line endings to
+        # CRLF, which gofmt flags on every file. The Linux cells already
+        # enforce gofmt on the canonical LF tree.
+        if: runner.os == 'Linux'
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "::error::gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: lib tests
+        run: go test ./v1alpha1/...
+
+      - name: e2e
+        run: go test -count=1 -v ./e2e/...
+
+  release:
+    needs: [ci]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push tag + create release
+      id-token: write   # cosign keyless signing via OIDC
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: resolve tag
+        id: tag
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Manual tag push (minor/major bumps): use the tag as-is.
+            echo "tag=${GITHUB_REF_NAME}"      >> "$GITHUB_OUTPUT"
+            echo "needs_push=false"            >> "$GITHUB_OUTPUT"
+            echo "skip=false"                  >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # main push: skip release if the commit opted out or already has a tag.
+          # Token must sit alone on its own line so prose mentioning it inline
+          # (subjects, doc paragraphs) doesn't accidentally suppress the release.
+          msg=$(git log -1 --pretty=%B)
+          if grep -qE '^[[:space:]]*\[skip release\][[:space:]]*$' <<<"$msg"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git tag --points-at HEAD | grep -q '^v'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Auto-bump patch from the latest v* tag (default v0.0.1 for first release).
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            next="v0.0.1"
+          else
+            IFS=. read -r major minor patch <<<"${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "tag=${next}"      >> "$GITHUB_OUTPUT"
+          echo "needs_push=true"  >> "$GITHUB_OUTPUT"
+          echo "skip=false"       >> "$GITHUB_OUTPUT"
+
+      - name: push tag
+        if: steps.tag.outputs.skip != 'true' && steps.tag.outputs.needs_push == 'true'
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag "${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      - name: create github release
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --generate-notes
+
+      - name: install cosign
+        if: steps.tag.outputs.skip != 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: sign source archives
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          repo="${GITHUB_REPOSITORY}"
+          mkdir -p dist
+
+          # Pull the auto-generated source archives that GitHub publishes
+          # alongside every tag, then sign them with cosign in keyless mode
+          # (OIDC -> Fulcio cert -> Rekor transparency log). The signature,
+          # cert, and Rekor entry are bundled in a single .sigstore file.
+          for ext in tar.gz zip; do
+            curl -fsSL "https://github.com/${repo}/archive/refs/tags/${tag}.${ext}" \
+              -o "dist/${tag}.${ext}"
+            cosign sign-blob --yes \
+              --bundle "dist/${tag}.${ext}.sigstore" \
+              "dist/${tag}.${ext}"
+          done
+
+          gh release upload "${tag}" \
+            "dist/${tag}.tar.gz.sigstore" \
+            "dist/${tag}.zip.sigstore"
+
+      - name: warm proxy.golang.org
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          mod="github.com/${GITHUB_REPOSITORY}"
+          curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.info" >/dev/null
+          curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.mod"  >/dev/null
+          curl -fsSL "https://sum.golang.org/lookup/${mod}@${tag}"    >/dev/null

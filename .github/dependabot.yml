@@ -1,0 +1,22 @@
+# Dependabot config for golib.
+#
+# Go modules treat `require` as the minimum acceptable version, so a library's
+# declared floor doubles as its compatibility promise. When you add
+# dependencies, consider an `ignore` rule for minor/patch bumps on the ones you
+# want pinned at a relaxed floor (so the minimum doesn't drift up automatically
+# while majors are still PR'd for review). Example:
+#
+#   ignore:
+#     - dependency-name: example.com/some/dep
+#       update-types: [version-update:semver-minor, version-update:semver-patch]
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
