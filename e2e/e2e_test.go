@@ -66,7 +66,7 @@ func TestExamples(t *testing.T) {
 		want string
 	}{
 		{"basic", "greeting: hello world"},
-		{"named", "widget: {ID:7"},
+		{"cluster", "cluster: replicated color = blue"},
 	}
 	for _, tc := range cases {
 		tc := tc

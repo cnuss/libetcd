@@ -8,13 +8,13 @@ agent-specific framing.
 
 1. [README.md](./README.md) — what the library does + public surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
-3. [`v1/api.go`](./v1/api.go) — public `Builder[T]` interface + `Result[T]`
+3. [`v1/api.go`](./v1/api.go) — public `Builder` + `Etcd` interfaces
 4. [`examples/basic/main.go`](./examples/basic/main.go) — minimal call site
 
 ## Before you touch anything
 
-- File map, module layout, and the conventions that bite (generics + godoc,
-  e2e `-count=1`, skip release anchoring, annotated cosign tags) are all in
+- File map, module layout, and the conventions that bite (embedded-node godoc
+  examples, e2e `-count=1`, skip release anchoring, annotated cosign tags) are all in
   [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the diff.
 - **Every change starts with an issue**, then a branch + PR with `Closes #<n>`.
   Don't push to `main`. Full flow in

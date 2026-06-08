@@ -11,10 +11,10 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Façade (`New`)                                 | [`lib.go`](./lib.go)                                             |
-| Stable interface (`Builder[T]` + `Result[T]`)  | [`v1/api.go`](./v1/api.go)                                       |
-| Implementation struct + `New[T]` constructor   | [`v1alpha1/impl.go`](./v1alpha1/impl.go)                         |
-| Builder methods (`WithName`, `WithValue`, …)   | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Unit tests + fuzz target                       | [`v1alpha1/builder_test.go`](./v1alpha1/builder_test.go)         |
+| Stable interfaces (`Builder` + `Etcd`)         | [`v1/api.go`](./v1/api.go)                                       |
+| Implementation + `Start` (embed wrapper)       | [`v1alpha1/impl.go`](./v1alpha1/impl.go)                         |
+| Builder methods (`WithName`, `WithPeers`, …)   | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
+| Unit tests (Put/Get round-trip)                | [`v1alpha1/builder_test.go`](./v1alpha1/builder_test.go)         |
 | godoc examples                                 | [`v1/example_test.go`](./v1/example_test.go)                     |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -32,24 +32,25 @@ Three packages, stable/alpha versioning:
 
 ```
 github.com/cnuss/libetcd           — root façade. Stable surface (New).
-github.com/cnuss/libetcd/v1        — stable Builder[T] interface + Result[T].
+github.com/cnuss/libetcd/v1        — stable Builder + Etcd interfaces.
 github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`libetcd.New[T]()…`). Code that needs to
-declare types against the interface imports `v1`. Direct access to the
-`BuilderImpl[T]` struct lives in `v1alpha1`. The current `Builder[T]` API is a
-generic starting point — swap it for the real one, keeping the layering.
+Application code imports the root (`libetcd.New()…`). Code that needs to declare
+types against the interfaces imports `v1`. Direct access to the `BuilderImpl`
+struct lives in `v1alpha1`. The `v1alpha1` package wraps
+`go.etcd.io/etcd/server/v3/embed` — keep the `embed`-specific glue there, behind
+the stable `v1` surface.
 
 ## Local development
 
-Requires Go 1.21 or later.
+Requires Go 1.23 or later (the floor etcd's `embed` package needs).
 
 ```sh
 git clone https://github.com/cnuss/libetcd.git
 cd libetcd
-make test   # library unit + fuzz tests (fast, in-package)
+make test   # library unit tests + godoc examples (fast, in-package)
 make e2e    # builds and runs every example binary
 ```
 
@@ -57,7 +58,7 @@ Run a specific example locally:
 
 ```sh
 make run basic
-make run named
+make run cluster
 ```
 
 ## Before you push
@@ -76,10 +77,10 @@ Easy to get wrong from the diff alone:
 - **`examples/` is intentionally duplicated.** Each `main.go` is a
   copy-pasteable starter; no shared internal package. Don't refactor it into
   one.
-- **godoc example funcs can't bind to generic types.** `go vet` rejects
-  `ExampleBuilder_*` in `v1` because `Builder` is parameterized — its example
-  checker hasn't caught up with generics. Work around it with package-level
-  example names (`Example_value` etc.). See [`v1/example_test.go`](./v1/example_test.go).
+- **godoc examples start a real node.** The `Example*` funcs in `v1` boot an
+  embedded etcd on an auto-selected port (`WithClientPort(0)`), so they take a
+  second or two and need a free loopback port. See
+  [`v1/example_test.go`](./v1/example_test.go).
 - **e2e builds binaries at runtime**, so the test cache can't see example
   source changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in
@@ -131,7 +132,7 @@ etc.
   changes, e2e tests (`e2e/e2e_test.go`) for example-visible changes.
 - **Keep the README in sync with the façade.** The README mirrors the public
   surface, so any change to it must update the README in the same PR:
-  - a new/changed/removed method on `Builder[T]` (or the `v1` surface) → update
+  - a new/changed/removed method on `Builder` (or the `v1` surface) → update
     the **API at a glance** block and the **Quick Start** snippet;
   - a new example → add a row to the **Examples** table;
   - a renamed package/version tier → update the **Layout** tree.

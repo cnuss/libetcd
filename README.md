@@ -7,13 +7,17 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cnuss/libetcd/badge)](https://scorecard.dev/viewer/?uri=github.com/cnuss/libetcd)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-`libetcd` is a thin, stable façade over stable/alpha versioned packages
-(`v1` stable contract, `v1alpha1` mutable implementation), with CI, CodeQL,
-OpenSSF Scorecard, cosign-signed releases, Dependabot, examples, and an e2e
-harness.
+`libetcd` is a thin, developer-friendly SDK for running **embedded etcd**: it
+wraps [`go.etcd.io/etcd/server/v3/embed`](https://pkg.go.dev/go.etcd.io/etcd/server/v3/embed)
+behind a fluent builder so a Go program can spin up a real etcd node — or a
+multi-node cluster — in-process and get back a ready-to-use `clientv3.Client`.
 
-The API is a generic builder: `New[T]()` configures with `With*` methods and
-finalizes with `Build()`.
+It ships as stable/alpha versioned packages (`v1` stable contract, `v1alpha1`
+mutable implementation), with CI, CodeQL, OpenSSF Scorecard, cosign-signed
+releases, Dependabot, examples, and an e2e harness.
+
+The API is a fluent builder: `New()` configures a node with `With*` methods and
+`Start(ctx)` boots it.
 
 ## Quick Start
 
@@ -25,18 +29,31 @@ go get github.com/cnuss/libetcd
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 
 	"github.com/cnuss/libetcd"
 )
 
 func main() {
-	res := libetcd.New[string]().
-		WithName("greeting").
-		WithValue("hello world").
-		Build()
+	ctx := context.Background()
 
-	fmt.Printf("%s: %s\n", res.Name, res.Value) // greeting: hello world
+	// Port 0 picks a free port; omit WithDir for a throwaway temp data dir.
+	e, err := libetcd.New().
+		WithName("greeter").
+		WithClientPort(0).
+		WithPeerPort(0).
+		Start(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer e.Close()
+
+	e.Client().Put(ctx, "greeting", "hello world")
+	resp, _ := e.Client().Get(ctx, "greeting")
+
+	fmt.Printf("greeting: %s\n", resp.Kvs[0].Value) // greeting: hello world
 }
 ```
 
@@ -48,14 +65,14 @@ Three packages, stable/alpha versioning:
 
 ```
 github.com/cnuss/libetcd           — root façade. Stable surface (New).
-github.com/cnuss/libetcd/v1        — stable Builder[T] interface + Result[T].
+github.com/cnuss/libetcd/v1        — stable Builder + Etcd interfaces.
 github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`libetcd.New[T]()…`). Code that needs to
-declare types against the interface imports `v1`. Direct access to the
-`BuilderImpl[T]` struct lives in `v1alpha1`.
+Application code imports the root (`libetcd.New()…`). Code that needs to declare
+types against the interfaces imports `v1`. Direct access to the `BuilderImpl`
+struct lives in `v1alpha1`.
 
 For the file-by-file map, see
 [CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).
@@ -63,41 +80,54 @@ For the file-by-file map, see
 ## API at a glance
 
 ```go
-type Builder[T any] interface {
-    WithName(name string) Builder[T]   // display name carried into the Result
-    WithValue(v T) Builder[T]          // the payload Build produces
-    Build() Result[T]                  // terminal: assembles and returns
-    Name() string                      // configured name (empty if unset)
+type Builder interface {
+    WithName(name string) Builder              // node (member) name; default "default"
+    WithDir(dir string) Builder                // data dir; default: a fresh temp dir
+    WithClientPort(port int) Builder           // localhost client port; 0 = pick free; default 2379
+    WithPeerPort(port int) Builder             // localhost peer port;  0 = pick free; default 2380
+    WithClientURL(urls ...string) Builder      // advanced: explicit client URLs
+    WithPeerURL(urls ...string) Builder        // advanced: explicit peer URLs
+    WithPeers(peers map[string]string) Builder // multi-node initial cluster: name -> peer URL
+    WithClusterToken(token string) Builder     // initial-cluster token; default "libetcd-cluster"
+    WithExistingCluster() Builder              // join an existing cluster instead of bootstrapping
+    WithLogLevel(level string) Builder         // server log level; default "error"
+    Start(ctx context.Context) (Etcd, error)   // terminal: boots, waits ready, dials a client
 }
 
-type Result[T any] struct {
-    Name  string `json:"name,omitempty"`
-    Value T      `json:"value"`
+type Etcd interface {
+    Client() *clientv3.Client // in-process-wired client to this node
+    Endpoints() []string      // actual bound client endpoints (ports resolved)
+    Server() *embed.Etcd      // escape hatch to the raw embed handle
+    Close() error             // closes the client, then stops the server
 }
 
-func New[T any]() Builder[T]   // unconfigured builder
+func New() Builder   // unconfigured builder
 ```
+
+Bring up a multi-node cluster by listing every member's peer URL with
+`WithPeers` (see [`examples/cluster`](./examples/cluster/main.go)); a node with
+no peers starts as a single-member cluster.
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example | Demonstrates                                          |
-| ------- | ----------------------------------------------------- |
-| `basic` | Smallest wiring — `New` + `WithValue` + `Build`.      |
-| `named` | A typed struct payload carried through `WithValue`.   |
+| Example   | Demonstrates                                                       |
+| --------- | ----------------------------------------------------------------- |
+| `basic`   | Smallest wiring — start one node, `Put`/`Get`, `Close`.           |
+| `cluster` | A 3-node in-process cluster via `WithPeers`; write one, read another. |
 
 Run one locally:
 
 ```sh
 make run basic
-make run named
+make run cluster
 ```
 
 ## Testing
 
 ```sh
-make test   # library unit + fuzz tests (fast, in-package)
+make test   # library unit tests + godoc examples (fast, in-package)
 make e2e    # builds and runs every example binary, asserts its output
 ```
 

@@ -29,7 +29,7 @@ windows:
 	GOOS=windows go vet ./...
 	GOOS=windows go build ./...
 
-# Library unit + fuzz tests (v1alpha1) plus the godoc examples (v1).
+# Library unit tests (v1alpha1) plus the godoc examples (v1).
 test:
 	go test ./...
 
@@ -41,7 +41,7 @@ e2e:
 
 # Run an example by name, forwarding any trailing words as args:
 #   make run basic
-#   make run named
+#   make run cluster
 run:
 	cd examples/$(word 2,$(MAKECMDGOALS)) && go run . $(wordlist 3,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 

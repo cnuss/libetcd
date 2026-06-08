@@ -1,36 +1,39 @@
 package v1_test
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/cnuss/libetcd"
 )
 
-// New returns an unconfigured Builder. Configure it with the With* methods and
-// finalize with Build.
+// New returns an unconfigured Builder. Configure it with the With* methods, then
+// Start the node and use its Client.
 func ExampleNew() {
-	res := libetcd.New[string]().
-		WithName("greeting").
-		WithValue("hello").
-		Build()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	fmt.Printf("%s = %q\n", res.Name, res.Value)
+	// Port 0 picks a free port, so the example never collides with a local etcd.
+	e, err := libetcd.New().
+		WithName("greeter").
+		WithClientPort(0).
+		WithPeerPort(0).
+		Start(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer e.Close()
+
+	if _, err := e.Client().Put(ctx, "greeting", "hello"); err != nil {
+		log.Fatal(err)
+	}
+	resp, err := e.Client().Get(ctx, "greeting")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("greeting = %q\n", resp.Kvs[0].Value)
 	// Output: greeting = "hello"
-}
-
-// WithValue sets the payload; the name is optional. Built without WithName, the
-// Result's Name is empty.
-func Example_value() {
-	res := libetcd.New[int]().WithValue(42).Build()
-
-	fmt.Printf("name=%q value=%d\n", res.Name, res.Value)
-	// Output: name="" value=42
-}
-
-// The zero value of T is returned when WithValue is never called.
-func Example_zeroValue() {
-	res := libetcd.New[int]().WithName("count").Build()
-
-	fmt.Printf("name=%q value=%d\n", res.Name, res.Value)
-	// Output: name="count" value=0
 }
