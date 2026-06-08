@@ -78,6 +78,7 @@ func (b *EtcdImpl) Client() *clientv3.Client {
 	b.mu.Lock()
 	cause := context.Cause(b.ctx)
 	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls)
+	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
 
 	if cause != nil {
@@ -86,6 +87,9 @@ func (b *EtcdImpl) Client() *clientv3.Client {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
+		// Use the server's configured logger so the client honors WithLogLevel
+		// (default "fatal") instead of clientv3's default warn-level logger.
+		Logger: lg,
 	})
 	if err != nil {
 		b.cancel(fmt.Errorf("dial client: %w", err))

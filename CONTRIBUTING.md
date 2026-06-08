@@ -39,7 +39,7 @@ github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`libetcd.New()…`). Code that needs to declare
+Application code imports the root (`libetcd.New(name)…`). Code that needs to declare
 types against the interfaces imports `v1`. Direct access to the `EtcdImpl`
 struct lives in `v1alpha1`. The `v1alpha1` package wraps
 `go.etcd.io/etcd/server/v3/embed` — keep the `embed`-specific glue there, behind

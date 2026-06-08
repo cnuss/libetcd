@@ -6,6 +6,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3
 	go.etcd.io/etcd/api/v3 v3.6.12
 	go.etcd.io/etcd/client/v3 v3.6.12
+	go.etcd.io/etcd/pkg/v3 v3.6.12
 	go.etcd.io/etcd/server/v3 v3.6.12
 	golang.org/x/net v0.52.0
 	google.golang.org/grpc v1.79.3
@@ -44,7 +45,6 @@ require (
 	github.com/xiang90/probing v0.0.0-20190116061207-43a291ad63a2 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.12 // indirect
-	go.etcd.io/etcd/pkg/v3 v3.6.12 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0 // indirect

@@ -26,8 +26,8 @@ import (
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-// New returns an unconfigured embedded etcd node. Configure it with the With*
-// methods (they mutate in place and chain), then call Start; Stop shuts it down.
+// New returns an embedded etcd node. Configure it with the With* methods (they
+// mutate in place and chain), then call Start; Stop shuts it down.
 //
 //	e := libetcd.New()
 //	e.WithDir("/tmp/data")

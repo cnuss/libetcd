@@ -84,14 +84,16 @@ type EtcdImpl struct {
 	loopbackCli  *clientv3.Client
 }
 
-// New returns an unconfigured EtcdImpl. The root libetcd.New façade wraps this
-// and returns it as the v1.Builder interface.
+// New returns an EtcdImpl with default configuration and a unique generated
+// member name. The root libetcd.New façade wraps this and returns it as the
+// v1.Etcd interface.
 //
 // The builder starts from embed.NewConfig() — the minimum configuration that
 // passes embed.Config.Validate() — and revalidates after every With* call.
 func New() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
+	cfg.Name = defaultName()
 	cfg.LogLevel = "fatal" // quiet by default; override with WithLogLevel
 	b := &EtcdImpl{
 		cfg:    cfg,

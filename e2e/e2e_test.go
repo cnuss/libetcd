@@ -67,6 +67,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"single-node", "greeting: hello world"},
 		{"multi-node", "greeting from node 2: hello world"},
+		{"load-test", "rtrips/s"},
 	}
 	for _, tc := range cases {
 		tc := tc

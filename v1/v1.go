@@ -63,12 +63,12 @@ type Accessor interface {
 // a derived config.ServerConfig. The first validation failure is latched and
 // surfaced by the accessors (e.g. Server returns nil) and by Start.
 //
-// Defaults (no method calls): name "default", a temp data dir, client URL
+// Defaults (no method calls): a temp data dir, client URL
 // http://localhost:2379, peer URL http://localhost:2380, a new cluster, and log
 // level "fatal".
 type Builder interface {
 	Accessor
-	// WithName sets the node (member) name. Default "default".
+	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) Etcd
 	// WithDir sets the data directory. Default: a fresh temp directory.
 	WithDir(dir string) Etcd

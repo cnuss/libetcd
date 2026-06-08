@@ -101,10 +101,6 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 	}
 	id := add.Member.ID
 
-	// Pick a unique name if the default is still in place (else members collide).
-	if name == "default" {
-		name = fmt.Sprintf("node-%x", id)
-	}
 	parts = append(parts, name+"="+selfPeer)
 	initialCluster := strings.Join(parts, ",")
 
