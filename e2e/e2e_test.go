@@ -66,6 +66,7 @@ func TestExamples(t *testing.T) {
 		want string
 	}{
 		{"single-node", "greeting: hello world"},
+		{"multi-node", "greeting from node 2: hello world"},
 	}
 	for _, tc := range cases {
 		tc := tc

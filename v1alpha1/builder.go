@@ -98,9 +98,9 @@ func (b *EtcdImpl) mutate(f func() error) {
 		return
 	}
 	// Single-member auto-sync: keep InitialCluster pointing at this node so a
-	// changed name or peer URL doesn't break minting. (Multi-node bootstrap —
-	// WithPeers — lands in a follow-up.)
-	if len(b.cfg.AdvertisePeerUrls) > 0 {
+	// changed name or peer URL doesn't break minting. Join pins the cluster
+	// (clusterSet) for a multi-member join and takes over InitialCluster.
+	if !b.clusterSet.Load() && len(b.cfg.AdvertisePeerUrls) > 0 {
 		b.cfg.InitialCluster = b.cfg.Name + "=" + b.cfg.AdvertisePeerUrls[0].String()
 	}
 	if err := b.validate(); err != nil {

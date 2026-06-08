@@ -59,6 +59,11 @@ type EtcdImpl struct {
 	peerHTTP       *http.Server
 	peerHTTPOnce   sync.Once
 
+	// clusterSet records that the cluster membership has been pinned (by Join,
+	// which joins an existing cluster). Until then, mutate auto-syncs
+	// InitialCluster to a single-member string. Once pinned, Join owns it.
+	clusterSet atomic.Bool
+
 	// serverOnce guards minting srv exactly once from the current srvcfg; a mint
 	// failure is latched as the context cause.
 	serverOnce sync.Once

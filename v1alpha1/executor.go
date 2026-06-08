@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/embed"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -43,6 +47,99 @@ func (b *EtcdImpl) Start() error {
 		}
 	})
 	return nil
+}
+
+// Join brings the node up as a member of an existing cluster, fully managed on
+// the joiner side: it binds its listeners, adds itself to the cluster as a
+// learner (non-voting, so it doesn't disturb quorum while catching up), starts,
+// and promotes itself to a voting member once caught up. It blocks until the
+// node is a voting member, or the bounding context elapses.
+func (b *EtcdImpl) Join(with *clientv3.Client) error {
+	if with == nil {
+		return errors.New("join: nil client")
+	}
+	// Bind listeners first so the self peer URL is concrete before member-add.
+	if err := b.ensureListeners(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	selfPeer := b.cfg.AdvertisePeerUrls[0].String()
+	name := b.cfg.Name
+	uctx := b.userCtx
+	b.mu.Unlock()
+
+	ctx := context.Background()
+	if uctx != nil {
+		ctx = uctx
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+	}
+
+	// Existing members, for this node's initial-cluster string.
+	ml, err := with.MemberList(ctx)
+	if err != nil {
+		return fmt.Errorf("join: member list: %w", err)
+	}
+	parts := make([]string, 0, len(ml.Members)+1)
+	for _, m := range ml.Members {
+		if m.Name == "" {
+			continue // not-yet-started member; has no usable name
+		}
+		for _, pu := range m.PeerURLs {
+			parts = append(parts, m.Name+"="+pu)
+		}
+	}
+
+	// Add self as a learner.
+	add, err := with.MemberAddAsLearner(ctx, []string{selfPeer})
+	if err != nil {
+		return fmt.Errorf("join: member add: %w", err)
+	}
+	id := add.Member.ID
+
+	// Pick a unique name if the default is still in place (else members collide).
+	if name == "default" {
+		name = fmt.Sprintf("node-%x", id)
+	}
+	parts = append(parts, name+"="+selfPeer)
+	initialCluster := strings.Join(parts, ",")
+
+	// Pin the cluster config: existing members + self, joining (not bootstrapping).
+	b.mutate(func() error {
+		b.cfg.Name = name
+		b.cfg.InitialCluster = initialCluster
+		b.cfg.ClusterState = embed.ClusterStateFlagExisting
+		b.clusterSet.Store(true)
+		return nil
+	})
+
+	if err := b.Start(); err != nil {
+		return fmt.Errorf("join: start: %w", err)
+	}
+
+	// Promote learner -> voting once it's caught up (blocks until done).
+	return b.promote(ctx, with, id)
+}
+
+// promote retries MemberPromote until it succeeds (etcd rejects promotion until
+// the learner is in sync with the leader) or ctx elapses.
+func (b *EtcdImpl) promote(ctx context.Context, with *clientv3.Client, id uint64) error {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := with.MemberPromote(ctx, id); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("join: promote member %x: %w", id, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // ensureListeners binds a free loopback listener for any side (client/peer) that
