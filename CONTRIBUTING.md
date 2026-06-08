@@ -1,6 +1,6 @@
 # Contributing
 
-This document is for everyone working on `golib` — humans and AI agents alike.
+This document is for everyone working on `libetcd` — humans and AI agents alike.
 It covers the layout, the local dev loop, the conventions that bite, and how a
 change gets from an issue to a release.
 
@@ -31,13 +31,13 @@ Deep-link by filename; line numbers will drift.
 Three packages, stable/alpha versioning:
 
 ```
-github.com/cnuss/golib           — root façade. Stable surface (New).
-github.com/cnuss/golib/v1        — stable Builder[T] interface + Result[T].
-github.com/cnuss/golib/v1alpha1  — current implementation. May change
+github.com/cnuss/libetcd           — root façade. Stable surface (New).
+github.com/cnuss/libetcd/v1        — stable Builder[T] interface + Result[T].
+github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`golib.New[T]()…`). Code that needs to
+Application code imports the root (`libetcd.New[T]()…`). Code that needs to
 declare types against the interface imports `v1`. Direct access to the
 `BuilderImpl[T]` struct lives in `v1alpha1`. The current `Builder[T]` API is a
 generic starting point — swap it for the real one, keeping the layering.
@@ -47,8 +47,8 @@ generic starting point — swap it for the real one, keeping the layering.
 Requires Go 1.21 or later.
 
 ```sh
-git clone https://github.com/cnuss/golib.git
-cd golib
+git clone https://github.com/cnuss/libetcd.git
+cd libetcd
 make test   # library unit + fuzz tests (fast, in-package)
 make e2e    # builds and runs every example binary
 ```
@@ -154,7 +154,7 @@ ref, then:
 
 - pushes the new tag,
 - creates a GitHub Release with auto-generated notes, and
-- warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/cnuss/golib)
+- warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/cnuss/libetcd)
   surfaces the new version without manual prodding.
 
 To opt a commit out of the auto-bump, put `[skip release]` on its own

@@ -1,11 +1,11 @@
-// Package v1 is the stable public surface for golib. The Builder interface and
+// Package v1 is the stable public surface for libetcd. The Builder interface and
 // Result type here are the contract callers depend on across releases; the
 // implementation lives in v1alpha1 and may change between alpha revisions.
 package v1
 
 // Builder assembles a value of type T from optional configuration. Configure it
 // with the With* methods (each returns the Builder for chaining), then call the
-// terminal Build to produce a Result. Obtain one from golib.New.
+// terminal Build to produce a Result. Obtain one from libetcd.New.
 type Builder[T any] interface {
 	// WithName sets a display name carried into the Result. Unset, the name is
 	// empty.

@@ -1,4 +1,4 @@
-# Dependabot config for golib.
+# Dependabot config for libetcd.
 #
 # Go modules treat `require` as the minimum acceptable version, so a library's
 # declared floor doubles as its compatibility promise. When you add

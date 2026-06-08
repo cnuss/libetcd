@@ -1,6 +1,6 @@
 package v1alpha1
 
-import v1 "github.com/cnuss/golib/v1"
+import v1 "github.com/cnuss/libetcd/v1"
 
 // WithName sets the display name carried into the Result.
 func (b *BuilderImpl[T]) WithName(name string) v1.Builder[T] {

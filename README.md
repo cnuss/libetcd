@@ -1,20 +1,13 @@
-<!--
-Made from this template? Find/replace "golib" → your library name across the
-repo, update lib.go's `package golib` clause, then delete this comment.
-`make all` should stay green. (Workflows read GITHUB_REPOSITORY at runtime, so
-they need no edits.)
--->
+# libetcd
 
-# golib
-
-[![Go Reference](https://pkg.go.dev/badge/github.com/cnuss/golib.svg)](https://pkg.go.dev/github.com/cnuss/golib)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cnuss/golib)](https://goreportcard.com/report/github.com/cnuss/golib)
-[![CI](https://github.com/cnuss/golib/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cnuss/golib/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/cnuss/golib/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/cnuss/golib/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cnuss/golib/badge)](https://scorecard.dev/viewer/?uri=github.com/cnuss/golib)
+[![Go Reference](https://pkg.go.dev/badge/github.com/cnuss/libetcd.svg)](https://pkg.go.dev/github.com/cnuss/libetcd)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cnuss/libetcd)](https://goreportcard.com/report/github.com/cnuss/libetcd)
+[![CI](https://github.com/cnuss/libetcd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cnuss/libetcd/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/cnuss/libetcd/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/cnuss/libetcd/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cnuss/libetcd/badge)](https://scorecard.dev/viewer/?uri=github.com/cnuss/libetcd)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-`golib` is a thin, stable façade over stable/alpha versioned packages
+`libetcd` is a thin, stable façade over stable/alpha versioned packages
 (`v1` stable contract, `v1alpha1` mutable implementation), with CI, CodeQL,
 OpenSSF Scorecard, cosign-signed releases, Dependabot, examples, and an e2e
 harness.
@@ -25,7 +18,7 @@ finalizes with `Build()`.
 ## Quick Start
 
 ```sh
-go get github.com/cnuss/golib
+go get github.com/cnuss/libetcd
 ```
 
 ```go
@@ -34,11 +27,11 @@ package main
 import (
 	"fmt"
 
-	"github.com/cnuss/golib"
+	"github.com/cnuss/libetcd"
 )
 
 func main() {
-	res := golib.New[string]().
+	res := libetcd.New[string]().
 		WithName("greeting").
 		WithValue("hello world").
 		Build()
@@ -54,13 +47,13 @@ func main() {
 Three packages, stable/alpha versioning:
 
 ```
-github.com/cnuss/golib           — root façade. Stable surface (New).
-github.com/cnuss/golib/v1        — stable Builder[T] interface + Result[T].
-github.com/cnuss/golib/v1alpha1  — current implementation. May change
+github.com/cnuss/libetcd           — root façade. Stable surface (New).
+github.com/cnuss/libetcd/v1        — stable Builder[T] interface + Result[T].
+github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`golib.New[T]()…`). Code that needs to
+Application code imports the root (`libetcd.New[T]()…`). Code that needs to
 declare types against the interface imports `v1`. Direct access to the
 `BuilderImpl[T]` struct lives in `v1alpha1`.
 

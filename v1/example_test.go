@@ -3,13 +3,13 @@ package v1_test
 import (
 	"fmt"
 
-	"github.com/cnuss/golib"
+	"github.com/cnuss/libetcd"
 )
 
 // New returns an unconfigured Builder. Configure it with the With* methods and
 // finalize with Build.
 func ExampleNew() {
-	res := golib.New[string]().
+	res := libetcd.New[string]().
 		WithName("greeting").
 		WithValue("hello").
 		Build()
@@ -21,7 +21,7 @@ func ExampleNew() {
 // WithValue sets the payload; the name is optional. Built without WithName, the
 // Result's Name is empty.
 func Example_value() {
-	res := golib.New[int]().WithValue(42).Build()
+	res := libetcd.New[int]().WithValue(42).Build()
 
 	fmt.Printf("name=%q value=%d\n", res.Name, res.Value)
 	// Output: name="" value=42
@@ -29,7 +29,7 @@ func Example_value() {
 
 // The zero value of T is returned when WithValue is never called.
 func Example_zeroValue() {
-	res := golib.New[int]().WithName("count").Build()
+	res := libetcd.New[int]().WithName("count").Build()
 
 	fmt.Printf("name=%q value=%d\n", res.Name, res.Value)
 	// Output: name="count" value=0

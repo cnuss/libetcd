@@ -3,7 +3,7 @@ package v1alpha1_test
 import (
 	"testing"
 
-	"github.com/cnuss/golib/v1alpha1"
+	"github.com/cnuss/libetcd/v1alpha1"
 )
 
 func TestBuildCarriesNameAndValue(t *testing.T) {

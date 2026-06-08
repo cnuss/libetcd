@@ -1,15 +1,15 @@
-// Command basic is the smallest golib example: build a value through the
+// Command basic is the smallest libetcd example: build a value through the
 // generic builder and print the result.
 package main
 
 import (
 	"fmt"
 
-	"github.com/cnuss/golib"
+	"github.com/cnuss/libetcd"
 )
 
 func main() {
-	res := golib.New[string]().
+	res := libetcd.New[string]().
 		WithName("greeting").
 		WithValue("hello world").
 		Build()

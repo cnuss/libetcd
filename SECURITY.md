@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-`golib` is pre-1.0 (`0.x`). Only the latest tagged release receives
+`libetcd` is pre-1.0 (`0.x`). Only the latest tagged release receives
 security fixes. Once `1.x` ships, the support window will move to "latest
 minor" of the current major.
 
@@ -14,7 +14,7 @@ minor" of the current major.
 ## Reporting a Vulnerability
 
 Please report security vulnerabilities **privately** via GitHub's
-[private vulnerability reporting](https://github.com/cnuss/golib/security/advisories/new)
+[private vulnerability reporting](https://github.com/cnuss/libetcd/security/advisories/new)
 on the Security tab. That opens a draft advisory only the maintainers can see.
 
 Please do **not** open a public issue for a suspected vulnerability.
@@ -47,7 +47,7 @@ To verify (cosign v2+):
 
 ```sh
 TAG=v0.1.0
-REPO=cnuss/golib
+REPO=cnuss/libetcd
 
 curl -fsSL "https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz" \
   -o "${TAG}.tar.gz"
@@ -56,7 +56,7 @@ curl -fsSL "https://github.com/${REPO}/releases/download/${TAG}/${TAG}.tar.gz.si
 
 cosign verify-blob \
   --bundle "${TAG}.tar.gz.sigstore" \
-  --certificate-identity-regexp '^https://github.com/cnuss/golib/' \
+  --certificate-identity-regexp '^https://github.com/cnuss/libetcd/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "${TAG}.tar.gz"
 ```
@@ -65,7 +65,7 @@ cosign verify-blob \
 
 ## Scope
 
-In-scope: anything in this repository's library code (the root `golib`
+In-scope: anything in this repository's library code (the root `libetcd`
 façade, `v1/`, `v1alpha1/`) or its release artifacts.
 
 Out of scope: vulnerabilities in third-party dependencies or the Go
