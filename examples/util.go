@@ -4,6 +4,7 @@ package examples
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +17,7 @@ import (
 const loadWorkers = 8
 
 // Load drives read/write traffic against one or more etcd nodes and prints a
-// throughput + latency summary, plus the current member list, every interval.
+// throughput + latency summary with a per-node status table every interval.
 // Registering a node with WithEtcd kicks off load against it immediately.
 type Load struct {
 	ctx      context.Context
@@ -28,7 +29,8 @@ type Load struct {
 
 	once    sync.Once
 	mu      sync.Mutex
-	members *clientv3.Client // client used to read the member list for summaries
+	targets []v1.Etcd
+	start   time.Time
 }
 
 // NewLoad returns a Load that reports every interval until ctx is cancelled.
@@ -37,48 +39,24 @@ func NewLoad(ctx context.Context, interval time.Duration) *Load {
 }
 
 // WithEtcd registers e as a load target and kicks off load against it. The first
-// call also starts the periodic summary printer. Returns the Load for chaining.
+// call also starts the periodic reporter. Returns the Load for chaining.
 func (l *Load) WithEtcd(e v1.Etcd) *Load {
 	cli := e.Client()
 	if cli == nil {
 		return l
 	}
 	l.mu.Lock()
-	l.members = cli
+	l.targets = append(l.targets, e)
 	l.mu.Unlock()
 
 	for w := range loadWorkers {
 		go l.worker(cli, w)
 	}
-	go l.status(e) // per-node endpoint status printer
-	l.once.Do(func() { go l.report() })
+	l.once.Do(func() {
+		l.start = time.Now()
+		go l.report()
+	})
 	return l
-}
-
-// status prints e's endpoint status (via its in-process loopback client) every
-// interval until ctx is cancelled.
-func (l *Load) status(e v1.Etcd) {
-	lb := e.Loopback()
-	if lb == nil {
-		return
-	}
-	ticker := time.NewTicker(l.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(l.ctx, time.Second)
-			st, err := lb.Status(ctx, "") // loopback ignores the endpoint arg
-			cancel()
-			if err != nil {
-				continue
-			}
-			fmt.Printf("status %16x: v%s db=%dB leader=%x term=%d index=%d\n",
-				st.Header.MemberId, st.Version, st.DbSize, st.Leader, st.RaftTerm, st.RaftIndex)
-		}
-	}
 }
 
 // worker hammers Put+Get round-trips on a per-worker key until ctx is cancelled.
@@ -99,7 +77,8 @@ func (l *Load) worker(cli *clientv3.Client, w int) {
 	}
 }
 
-// report prints a summary every interval until ctx is cancelled.
+// report prints one consolidated summary block every interval (single goroutine,
+// so lines never interleave).
 func (l *Load) report() {
 	ticker := time.NewTicker(l.interval)
 	defer ticker.Stop()
@@ -121,29 +100,99 @@ func (l *Load) report() {
 			if dOps > 0 {
 				avgMs = float64(dNanos) / float64(dOps) / 1e6
 			}
-			fmt.Printf("load: %7.0f rtrips/s  avg %6.2f ms  (total %d, errs %d)\n", tput, avgMs, o, e)
-			l.printMembers()
-
 			lastOps, lastNanos, last = o, n, now
+
+			fmt.Print(l.block(now.Sub(l.start), tput, avgMs, o, e))
 		}
 	}
 }
 
-// printMembers prints the cluster's current members under the summary line.
-func (l *Load) printMembers() {
+// block renders one summary block: a header, the load line, and a node table.
+func (l *Load) block(elapsed time.Duration, tput, avgMs float64, total, errs int64) string {
+	var b strings.Builder
+	rule := strings.Repeat("─", 64)
+
+	fmt.Fprintf(&b, "\n┌─ load · %s %s\n", elapsed.Truncate(time.Second), rule[:48])
+	fmt.Fprintf(&b, "│  %.0f rtrips/s   avg %.1f ms   total %d   errs %d\n", tput, avgMs, total, errs)
+	fmt.Fprintf(&b, "│  %-24s %-7s %-6s %-9s %10s %4s\n", "NODE", "ROLE", "LEADER", "DB", "INDEX", "TERM")
+
+	names := l.memberNames()
+	for _, e := range l.snapshotTargets() {
+		st := l.statusOf(e)
+		if st == nil {
+			continue
+		}
+		id := st.Header.MemberId
+		name := names[id]
+		if name == "" {
+			name = fmt.Sprintf("%x", id)
+		}
+		role := "voter"
+		if st.IsLearner {
+			role = "learner"
+		}
+		leader := ""
+		if st.Leader == id {
+			leader = "★"
+		}
+		fmt.Fprintf(&b, "│  %-24s %-7s %-6s %-9s %10d %4d\n",
+			name, role, leader, humanBytes(st.DbSize), st.RaftIndex, st.RaftTerm)
+	}
+	fmt.Fprintf(&b, "└%s\n", rule)
+	return b.String()
+}
+
+func (l *Load) snapshotTargets() []v1.Etcd {
 	l.mu.Lock()
-	cli := l.members
-	l.mu.Unlock()
-	if cli == nil {
-		return
+	defer l.mu.Unlock()
+	return append([]v1.Etcd(nil), l.targets...)
+}
+
+// memberNames returns a member-id -> name map, queried from the first reachable
+// node's loopback client.
+func (l *Load) memberNames() map[uint64]string {
+	for _, e := range l.snapshotTargets() {
+		lb := e.Loopback()
+		if lb == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(l.ctx, time.Second)
+		ml, err := lb.MemberList(ctx)
+		cancel()
+		if err != nil {
+			continue
+		}
+		m := make(map[uint64]string, len(ml.Members))
+		for _, mem := range ml.Members {
+			m[mem.ID] = mem.Name
+		}
+		return m
+	}
+	return nil
+}
+
+// statusOf returns e's endpoint status via its in-process loopback client.
+func (l *Load) statusOf(e v1.Etcd) *clientv3.StatusResponse {
+	lb := e.Loopback()
+	if lb == nil {
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(l.ctx, time.Second)
 	defer cancel()
-	ml, err := cli.MemberList(ctx)
+	st, err := lb.Status(ctx, "") // loopback ignores the endpoint arg
 	if err != nil {
-		return
+		return nil
 	}
-	for _, m := range ml.Members {
-		fmt.Printf("  %16x  %-22s learner=%-5v  peers=%v\n", m.ID, m.Name, m.IsLearner, m.PeerURLs)
+	return st
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
 }
