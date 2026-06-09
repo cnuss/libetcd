@@ -12,12 +12,14 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc"
+	"go.etcd.io/etcd/server/v3/lease/leasehttp"
 	"google.golang.org/grpc"
 )
 
@@ -217,14 +219,14 @@ func (b *EtcdImpl) GrpcServer() *grpc.Server {
 	return b.grpcSrv
 }
 
-// ClientListener returns the listener set by WithClientListener, or nil.
+// ClientListener returns the listener set by WithClientServing, or nil.
 func (b *EtcdImpl) ClientListener() net.Listener {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.clientListener
 }
 
-// PeerListener returns the listener set by WithPeerListener, or nil.
+// PeerListener returns the listener set by WithPeerServing, or nil.
 func (b *EtcdImpl) PeerListener() net.Listener {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -244,12 +246,31 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	return etcdhttp.NewPeerHandler(lg, srv)
 }
 
+// PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —
+// the same set etcdhttp.NewPeerHandler registers: raft messages, membership,
+// lease forwarding, version, and downgrade. PeerHTTP routes these to PeerHandler
+// when WithPeerServing was given a server carrying its own handler, so raft and
+// the application's routes can share one listener.
+//
+// This list is hand-maintained against etcd's peer mux; if a future etcd version
+// adds a peer route, add it here too.
+func (b *EtcdImpl) PeerPaths() []string {
+	return []string{
+		rafthttp.RaftPrefix, rafthttp.RaftPrefix + "/",
+		"/members", "/members/promote/",
+		leasehttp.LeasePrefix, leasehttp.LeaseInternalPrefix,
+		etcdserver.DowngradeEnabledPath,
+		etcdserver.PeerHashKVPath,
+		"/version",
+	}
+}
+
 // ClientHandler returns an http.Handler serving the etcd v3 client API for the
 // minted server, or nil if the server can't be minted. It mirrors embed's
 // serveClients: a v3rpc gRPC server (with election and lock services) wrapped as
 // an HTTP/2 handler.
 //
-// When a cleartext client listener was provided (WithClientListener, non-TLS),
+// When a cleartext client listener was provided (WithClientServing, non-TLS),
 // the REST/JSON grpc-gateway is also wired — backed by a lazy gRPC connection to
 // that listener's address — and multiplexed with gRPC, and the result is h2c-
 // wrapped so a plaintext listener serves HTTP/2. A TLS listener gets the gRPC-
@@ -266,7 +287,7 @@ func (b *EtcdImpl) ClientHandler() http.Handler {
 	b.mu.Unlock()
 
 	// Cleartext when there's no listener or it's not TLS-wrapped.
-	cleartext := cl == nil || listenerScheme(cl) == "http"
+	cleartext := cl == nil || !isTLS(cl)
 
 	var handler http.Handler = grpcHandlerFunc(gs, nil)
 	// REST gateway only for a cleartext listener: it dials the listener address
@@ -284,19 +305,25 @@ func (b *EtcdImpl) ClientHandler() http.Handler {
 }
 
 // ClientHTTP returns the http.Server for the client (v3 API) listener, resolved
-// at most once: the one supplied via WithClientHTTP, or a default whose Handler
-// is ClientHandler.
+// at most once: the one supplied to WithClientServing, or a default whose Handler
+// is ClientHandler. A supplied server with no Handler is given ClientHandler; one
+// that carries its own Handler is served as-is (no path-mux — see WithClientServing).
 func (b *EtcdImpl) ClientHTTP() *http.Server {
 	b.clientHTTPOnce.Do(func() {
 		b.mu.Lock()
-		missing := b.clientHTTP == nil
+		srv := b.clientHTTP
 		b.mu.Unlock()
-		if missing {
-			h := &http.Server{Handler: b.ClientHandler()}
-			b.mu.Lock()
-			b.clientHTTP = h
-			b.mu.Unlock()
+
+		switch {
+		case srv == nil:
+			srv = &http.Server{Handler: b.ClientHandler()}
+		case srv.Handler == nil:
+			srv.Handler = b.ClientHandler()
 		}
+
+		b.mu.Lock()
+		b.clientHTTP = srv
+		b.mu.Unlock()
 	})
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -304,19 +331,40 @@ func (b *EtcdImpl) ClientHTTP() *http.Server {
 }
 
 // PeerHTTP returns the http.Server for the peer (raft) listener, resolved at
-// most once: the one supplied via WithPeerHTTP, or a default whose Handler is
+// most once: the one supplied to WithPeerServing, or a default whose Handler is
 // PeerHandler.
+//
+// When the supplied server carries its own Handler (an application sharing the
+// peer port), the raft PeerPaths are muxed onto PeerHandler and everything else
+// falls through to that handler, so raft keeps working alongside it. Resolving
+// the handler mints the server, so this must be called after Start has bound the
+// listeners (Start calls it); calling it earlier freezes the config.
 func (b *EtcdImpl) PeerHTTP() *http.Server {
 	b.peerHTTPOnce.Do(func() {
 		b.mu.Lock()
-		missing := b.peerHTTP == nil
+		srv := b.peerHTTP
 		b.mu.Unlock()
-		if missing {
-			h := &http.Server{Handler: b.PeerHandler()}
-			b.mu.Lock()
-			b.peerHTTP = h
-			b.mu.Unlock()
+
+		ph := b.PeerHandler()
+		switch {
+		case srv == nil:
+			srv = &http.Server{Handler: ph}
+		case srv.Handler == nil:
+			srv.Handler = ph
+		default:
+			// Application handler on the peer port: route raft paths to the peer
+			// handler, everything else to the supplied handler.
+			mux := http.NewServeMux()
+			for _, p := range b.PeerPaths() {
+				mux.Handle(p, ph)
+			}
+			mux.Handle("/", srv.Handler)
+			srv.Handler = mux
 		}
+
+		b.mu.Lock()
+		b.peerHTTP = srv
+		b.mu.Unlock()
 	})
 	b.mu.Lock()
 	defer b.mu.Unlock()

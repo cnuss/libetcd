@@ -93,13 +93,11 @@ type Etcd interface {
 type Builder interface {
     WithName(name string) Etcd                // member name; default: a unique generated name
     WithDir(dir string) Etcd                  // data dir; default: a fresh temp dir
-    WithClientListener(l net.Listener) Etcd   // client URL from a listener (https if TLS-wrapped)
-    WithPeerListener(l net.Listener) Etcd     // peer URL from a listener
     WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
     WithLog(level string, w io.Writer) Etcd   // route logs to w at level; silent by default
     WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
-    WithClientHTTP(srv *http.Server) Etcd     // supply the client (v3 API) http.Server
-    WithPeerHTTP(srv *http.Server) Etcd       // supply the peer (raft) http.Server
+    WithClientServing(l net.Listener, srv *http.Server) Etcd // client listener + server (v3 API)
+    WithPeerServing(l net.Listener, srv *http.Server) Etcd   // peer listener + server; raft + app share a port
 }
 
 // Executor — lifecycle.
@@ -117,8 +115,9 @@ type Server interface {
     PeerHandler() http.Handler       // raft peer protocol handler
     ClientHTTP() *http.Server        // client http.Server (provided or default)
     PeerHTTP() *http.Server          // peer http.Server (provided or default)
-    ClientListener() net.Listener    // listener set via WithClientListener, or nil
-    PeerListener() net.Listener      // listener set via WithPeerListener, or nil
+    ClientListener() net.Listener    // listener set via WithClientServing, or nil
+    PeerListener() net.Listener      // listener set via WithPeerServing, or nil
+    PeerPaths() []string             // raft path prefixes (muxed onto PeerHandler by WithPeerServing)
 }
 
 // Client — clientv3 clients to the cluster.

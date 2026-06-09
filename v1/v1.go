@@ -37,17 +37,24 @@ type Server interface {
 	// PeerHandler returns an http.Handler serving the peer (raft) protocol for
 	// the minted server, or nil if the server can't be minted.
 	PeerHandler() http.Handler
+	// PeerPaths returns the URL path prefixes the peer (raft) protocol must
+	// serve: the raft message endpoints plus the membership, lease-forwarding,
+	// version, and downgrade paths. WithPeerServing routes these to PeerHandler
+	// when a caller supplies their own handler on the same listener, so raft keeps
+	// working alongside application routes. Callers serving the peer protocol
+	// themselves can use it to mount the same set.
+	PeerPaths() []string
 	// ClientHTTP returns the http.Server for the client (v3 API) listener,
-	// resolved at most once: the one supplied via WithClientHTTP, or a default
+	// resolved at most once: the one supplied to WithClientServing, or a default
 	// whose Handler is ClientHandler.
 	ClientHTTP() *http.Server
 	// PeerHTTP returns the http.Server for the peer (raft) listener, resolved at
-	// most once: the one supplied via WithPeerHTTP, or a default whose Handler is
-	// PeerHandler.
+	// most once: the one supplied to WithPeerServing, or a default whose Handler
+	// is PeerHandler.
 	PeerHTTP() *http.Server
-	// ClientListener returns the listener set by WithClientListener, or nil.
+	// ClientListener returns the listener set by WithClientServing, or nil.
 	ClientListener() net.Listener
-	// PeerListener returns the listener set by WithPeerListener, or nil.
+	// PeerListener returns the listener set by WithPeerServing, or nil.
 	PeerListener() net.Listener
 }
 
@@ -90,13 +97,6 @@ type Builder interface {
 	WithName(name string) Etcd
 	// WithDir sets the data directory. Default: a fresh temp directory.
 	WithDir(dir string) Etcd
-	// WithClientListener sets the client (v3 API) listen+advertise URL from a
-	// net.Listener's address (scheme inferred: https if TLS-wrapped, else http).
-	// Pass a listener bound to :0 to claim a concrete free port.
-	WithClientListener(l net.Listener) Etcd
-	// WithPeerListener sets the peer (raft) listen+advertise URL from a
-	// net.Listener's address.
-	WithPeerListener(l net.Listener) Etcd
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
 	WithClusterToken(token string) Etcd
 	// WithLog routes the server's logs to writer at the given level (e.g.
@@ -105,12 +105,36 @@ type Builder interface {
 	// WithContext ties the node's lifetime to ctx: when ctx is cancelled, the
 	// node is gracefully Stopped. Without it, the node runs until Stop is called.
 	WithContext(ctx context.Context) Etcd
-	// WithClientHTTP supplies the http.Server for the client (v3 API) listener.
-	// Optional; ClientHTTP creates a default if unset.
-	WithClientHTTP(srv *http.Server) Etcd
-	// WithPeerHTTP supplies the http.Server for the peer (raft) listener.
-	// Optional; PeerHTTP creates a default if unset.
-	WithPeerHTTP(srv *http.Server) Etcd
+	// WithClientServing configures how the client (v3 API) is served, unifying the
+	// listener and the http.Server in one call.
+	//
+	//   - lis sets the client listen+advertise URL from the listener's address
+	//     (https if TLS-wrapped). Pass a listener bound to :0 to claim a free
+	//     port. If nil, Start auto-binds a free loopback listener.
+	//   - srv supplies the client http.Server. If nil, a default server whose
+	//     Handler is ClientHandler is used. If srv carries its own Handler, it is
+	//     served as-is and replaces the client API — unlike the peer side, the
+	//     client handler is content-type-multiplexed gRPC and cannot be path-muxed,
+	//     so a caller wanting both must compose ClientHandler themselves.
+	//
+	// Both nil is equivalent to not calling it. Replaces the former
+	// WithClientListener + WithClientHTTP pair.
+	WithClientServing(lis net.Listener, srv *http.Server) Etcd
+	// WithPeerServing configures how the peer (raft) protocol is served, unifying
+	// the listener and the http.Server in one call.
+	//
+	//   - lis sets the peer listen+advertise URL from the listener's address
+	//     (https if TLS-wrapped). Pass a listener bound to :0 to claim a free
+	//     port. If nil, Start auto-binds a free loopback listener.
+	//   - srv supplies the peer http.Server (custom timeouts, TLSConfig, …). If
+	//     nil, a default server is used. If srv carries its own Handler — e.g. an
+	//     application mux sharing the peer port — the raft PeerPaths are routed to
+	//     PeerHandler and all other paths to srv.Handler, so raft keeps working
+	//     alongside the application routes.
+	//
+	// Both nil is equivalent to not calling it: a free loopback listener serving
+	// the raft handler. Replaces the former WithPeerListener + WithPeerHTTP pair.
+	WithPeerServing(lis net.Listener, srv *http.Server) Etcd
 }
 
 type Executor interface {

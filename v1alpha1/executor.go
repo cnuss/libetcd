@@ -19,7 +19,7 @@ import (
 
 // Start mints and starts the server (at most once) and serves the client and
 // peer HTTP servers on their listeners in the background. Listeners not supplied
-// via WithClientListener/WithPeerListener are auto-bound to a free loopback
+// via WithClientServing/WithPeerServing are auto-bound to a free loopback
 // port. It returns the latched configuration error if the server can't be
 // minted.
 func (b *EtcdImpl) Start() error {
@@ -40,7 +40,8 @@ func (b *EtcdImpl) Start() error {
 
 		// Serve the peer + client listeners *before* waiting for ready: a joining
 		// member needs its peer server up to receive raft and catch up, or
-		// ReadyNotify never fires.
+		// ReadyNotify never fires. PeerHTTP/ClientHTTP resolve the supplied or
+		// default http.Server (and mux any application handler onto the raft paths).
 		if pl != nil {
 			ph := b.PeerHTTP()
 			go func() { _ = ph.Serve(pl) }()
@@ -279,7 +280,7 @@ func retry(ctx context.Context, fn func() bool) error {
 }
 
 // ensureListeners binds a free loopback listener for any side (client/peer) that
-// wasn't given one via WithClientListener/WithPeerListener. It must run before
+// wasn't given one via WithClientServing/WithPeerServing. It must run before
 // the server is minted so the advertised URLs match the bound ports.
 func (b *EtcdImpl) ensureListeners() error {
 	if b.ClientListener() == nil {
@@ -287,14 +288,14 @@ func (b *EtcdImpl) ensureListeners() error {
 		if err != nil {
 			return fmt.Errorf("client listener: %w", err)
 		}
-		b.WithClientListener(l)
+		b.WithClientServing(l, nil)
 	}
 	if b.PeerListener() == nil {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("peer listener: %w", err)
 		}
-		b.WithPeerListener(l)
+		b.WithPeerServing(l, nil)
 	}
 	return nil
 }
