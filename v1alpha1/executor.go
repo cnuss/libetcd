@@ -145,8 +145,9 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return fmt.Errorf("join: start: %w", err)
 	}
 
-	// Wait until this learner's raft index is within 90% of the leader's before
-	// attempting promotion, so etcd doesn't reject it for being out of sync.
+	// Wait until this learner is in sync with the leader before attempting
+	// promotion (same raft term, and index within 90%), so etcd doesn't reject
+	// it for being out of sync.
 	self := b.Self()
 	leaderEP := ""
 	if eps := mc.Endpoints(); len(eps) > 0 {
@@ -156,7 +157,9 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 	for self != nil {
 		leaderSt, lErr := mc.Status(ctx, leaderEP)
 		selfSt, sErr := self.Status(ctx, "") // loopback ignores the endpoint arg
-		if lErr == nil && sErr == nil && selfSt.RaftIndex*100 >= leaderSt.RaftIndex*90 {
+		if lErr == nil && sErr == nil &&
+			selfSt.RaftTerm == leaderSt.RaftTerm &&
+			selfSt.RaftIndex*100 >= leaderSt.RaftIndex*90 {
 			break
 		}
 		select {
