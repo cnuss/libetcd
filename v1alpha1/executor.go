@@ -14,7 +14,7 @@ import (
 	"go.etcd.io/etcd/server/v3/embed"
 
 	v1 "github.com/cnuss/libetcd/v1"
-	"github.com/cnuss/libetcd/v1alpha1/hack"
+	"github.com/cnuss/libetcd/v1alpha1/snapshot"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -161,7 +161,7 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 	// leader with a *raft snapshot* — and applying that snapshot panics the
 	// embedded host on Windows (etcd renames the snapshot db over the still-open
 	// backend; "Access is denied"). Seeding makes the leader catch us up over the
-	// log instead. See v1alpha1/hack/snapshot.go.
+	// log instead. See v1alpha1/snapshot/snapshot.go.
 	if err := b.seedFromLeader(ctx, mc, id, name); err != nil {
 		return fmt.Errorf("join: seed from leader: %w", err)
 	}
@@ -217,13 +217,13 @@ func (b *EtcdImpl) seedFromLeader(ctx context.Context, mc *clientv3.Client, self
 	if err != nil {
 		return fmt.Errorf("member list: %w", err)
 	}
-	members := make([]hack.MemberInfo, 0, len(ml.Members))
+	members := make([]snapshot.MemberInfo, 0, len(ml.Members))
 	for _, m := range ml.Members {
 		name := m.Name
 		if m.ID == selfID {
 			name = selfName // the leader records the new learner with an empty name
 		}
-		members = append(members, hack.MemberInfo{
+		members = append(members, snapshot.MemberInfo{
 			ID:         m.ID,
 			Name:       name,
 			PeerURLs:   m.PeerURLs,
@@ -246,13 +246,13 @@ func (b *EtcdImpl) seedFromLeader(ctx context.Context, mc *clientv3.Client, self
 	defer os.RemoveAll(scratch)
 	dbPath := filepath.Join(scratch, "leader.db")
 
-	mgr := hack.NewV3(lg)
+	mgr := snapshot.NewV3(lg)
 	leaderCfg := clientv3.Config{Endpoints: []string{eps[0]}, DialTimeout: 5 * time.Second, Logger: lg}
 	if _, err := mgr.Save(ctx, leaderCfg, dbPath); err != nil {
 		return fmt.Errorf("snapshot save: %w", err)
 	}
 
-	return mgr.Restore(hack.RestoreConfig{
+	return mgr.Restore(snapshot.RestoreConfig{
 		SnapshotPath:  dbPath,
 		Name:          selfName,
 		SelfID:        selfID,

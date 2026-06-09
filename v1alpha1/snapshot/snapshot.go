@@ -12,54 +12,57 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package hack is a vendored, surgically modified fork of
-// go.etcd.io/etcd/etcdutl/v3/snapshot. Upstream Restore bootstraps a *brand new*
-// cluster: it recomputes member IDs deterministically and writes a fresh raft
-// log starting at index 1. That can't be used to seed a node joining a *live*
-// cluster — the leader already assigned the new member a timestamped ID, and the
-// restored node's low-index log would conflict with the leader's (compacted)
-// history, forcing the leader to send a raft snapshot.
+// Package snapshot is a minimal fork of go.etcd.io/etcd/etcdutl/snapshot
+// (v3_snapshot.go @ v3.6.12). It vendors only what libetcd's join-seed flow
+// needs and changes only what must change; everything else is byte-for-byte
+// upstream so re-syncing against a new etcd is a small diff.
 //
-// On Windows, receiving that snapshot panics the embedded host: applySnapshot ->
-// OpenSnapshotBackend renames the snapshot db over the still-open bbolt backend,
-// which Windows refuses ("Access is denied"). See the join flow in executor.go.
+// What differs from upstream:
 //
-// This fork changes Restore so the seeded data directory impersonates a node
-// that has *already applied* the leader's snapshot at the leader's live raft
-// index: it keeps the leader-assigned member IDs verbatim (RestoreConfig.Members
-// + SelfID), pins the leader's cluster ID, preserves learner status in the conf
-// state, and anchors the raft snapshot at the copied db's own consistent
-// index/term. The joiner then boots already caught up to that index, so the
-// leader replicates forward over the log and never sends a snapshot.
-package hack
+//   - Restore seeds a node joining a *live* cluster instead of bootstrapping a
+//     fresh one. Upstream recomputes member IDs and writes a raft log from index
+//     1; that log would conflict with the leader's compacted history and force a
+//     raft snapshot. On Windows, applying that snapshot panics the embedded host
+//     (OpenSnapshotBackend renames the snapshot db over the still-open bbolt
+//     backend — "Access is denied"). Instead, Restore keeps the leader-assigned
+//     member IDs verbatim (RestoreConfig.Members + SelfID), pins the leader's
+//     cluster ID, preserves learner status, and anchors the raft snapshot at the
+//     copied db's own consistent index/term — so the seeded node boots already
+//     caught up and the leader replicates forward over the log, never a MsgSnap.
+//   - saveWALAndSnap takes that (index, term), writes no post-snapshot entries,
+//     and preserves the voter/learner split (upstream's is index-1, voters-only,
+//     and is explicitly TODO'd as ignoring learners).
+//   - readConsistentIndex (new) reads the anchor index/term from the copied db.
+//
+// What is upstream-identical: Save (delegates to client/v3/snapshot),
+// hasChecksum, outDbPath, saveDB, copyAndVerifyDB (bar a close-error capture),
+// updateCIndex.
+//
+// What is dropped as unused: Status / bytesToRev and the revision-bump restore
+// path (modifyLatestRevision et al.); libetcd only calls Save and Restore.
+package snapshot
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 
 	"go.uber.org/zap"
 
-	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
-	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/client/v3/snapshot"
+	clientsnapshot "go.etcd.io/etcd/client/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
 	"go.etcd.io/etcd/server/v3/storage/backend"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
@@ -67,27 +70,21 @@ import (
 	"go.etcd.io/raft/v3/raftpb"
 )
 
-// Manager defines snapshot methods.
+// Manager defines the snapshot methods libetcd uses.
 type Manager interface {
-	// Save fetches snapshot from remote etcd server, saves data
-	// to target path and returns server version. If the context "ctx" is canceled or timed out,
-	// snapshot save stream will error out (e.g. context.Canceled,
-	// context.DeadlineExceeded). Make sure to specify only one endpoint
-	// in client configuration. Snapshot API must be requested to a
-	// selected node, and saved snapshot is the point-in-time state of
-	// the selected node.
+	// Save fetches a snapshot from a remote etcd server, saves it to dbPath, and
+	// returns the server version. Specify exactly one endpoint in cfg: the
+	// snapshot is the point-in-time state of that node. A cancelled/timed-out ctx
+	// errors the save stream.
 	Save(ctx context.Context, cfg clientv3.Config, dbPath string) (version string, err error)
 
-	// Status returns the snapshot file information.
-	Status(dbPath string) (Status, error)
-
-	// Restore restores a new etcd data directory from given snapshot
-	// file. It returns an error if specified data directory already
-	// exists, to prevent unintended data directory overwrites.
+	// Restore writes a seed data directory from a leader snapshot so the node
+	// boots as an already-caught-up member of the live cluster. It errors if the
+	// target data directory already exists non-empty.
 	Restore(cfg RestoreConfig) error
 }
 
-// NewV3 returns a new snapshot Manager for v3.x snapshot.
+// NewV3 returns a new snapshot Manager for v3.x snapshots.
 func NewV3(lg *zap.Logger) Manager {
 	return &v3Manager{lg: lg}
 }
@@ -96,7 +93,7 @@ type v3Manager struct {
 	lg *zap.Logger
 
 	name      string
-	selfID    uint64
+	selfID    uint64 // fork: the leader-assigned ID of the joining node
 	srcDbPath string
 	walDir    string
 	snapDir   string
@@ -116,113 +113,7 @@ func hasChecksum(n int64) bool {
 
 // Save fetches snapshot from remote etcd server and saves data to target path.
 func (s *v3Manager) Save(ctx context.Context, cfg clientv3.Config, dbPath string) (version string, err error) {
-	return snapshot.SaveWithVersion(ctx, s.lg, cfg, dbPath)
-}
-
-// Status is the snapshot file status.
-type Status struct {
-	Hash      uint32 `json:"hash"`
-	Revision  int64  `json:"revision"`
-	TotalKey  int    `json:"totalKey"`
-	TotalSize int64  `json:"totalSize"`
-	// Version is equal to storageVersion of the snapshot
-	// Empty if server does not supports versioned snapshots (<v3.6)
-	Version string `json:"version"`
-}
-
-// Status returns the snapshot file information.
-func (s *v3Manager) Status(dbPath string) (ds Status, err error) {
-	if _, err = os.Stat(dbPath); err != nil {
-		return ds, err
-	}
-
-	db, err := bolt.Open(dbPath, 0o400, &bolt.Options{ReadOnly: true})
-	if err != nil {
-		return ds, err
-	}
-	defer db.Close()
-
-	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
-	seenKeys := make(map[string]struct{})
-
-	if err = db.View(func(tx *bolt.Tx) error {
-		// check snapshot file integrity first
-		var dbErrStrings []string
-		for dbErr := range tx.Check() {
-			dbErrStrings = append(dbErrStrings, dbErr.Error())
-		}
-		if len(dbErrStrings) > 0 {
-			return fmt.Errorf("snapshot file integrity check failed. %d errors found.\n"+strings.Join(dbErrStrings, "\n"), len(dbErrStrings))
-		}
-		ds.TotalSize = tx.Size()
-		v := schema.ReadStorageVersionFromSnapshot(tx)
-		if v != nil {
-			ds.Version = v.String()
-		}
-		c := tx.Cursor()
-		for next, _ := c.First(); next != nil; next, _ = c.Next() {
-			b := tx.Bucket(next)
-			if b == nil {
-				return fmt.Errorf("nil bucket: %q", string(next))
-			}
-			_, err = h.Write(next)
-			if err != nil {
-				return fmt.Errorf("cannot hash bucket name: %q err: %w", string(next), err)
-			}
-
-			iskeyb := (bytes.Equal(next, schema.Key.Name()))
-			if err = b.ForEach(func(k, v []byte) error {
-				_, err = h.Write(k)
-				if err != nil {
-					return fmt.Errorf("cannot hash bucket key: %q err: %w", k, err)
-				}
-				_, err = h.Write(v)
-				if err != nil {
-					return fmt.Errorf("cannot hash bucket key: %q value: %q err: %w", k, v, err)
-				}
-				if iskeyb {
-					var rev mvcc.Revision
-					rev, err = bytesToRev(k)
-					if err != nil {
-						return fmt.Errorf("cannot parse revision key: %q err: %w", k, err)
-					}
-					ds.Revision = rev.Main
-
-					var kv mvccpb.KeyValue
-					err = kv.Unmarshal(v)
-					if err != nil {
-						return fmt.Errorf("cannot unmarshal value, key: %q value: %q err: %w", k, v, err)
-					}
-					key := string(kv.Key)
-					// refer to https://etcd.io/docs/v3.5/learning/data_model/
-					if !mvcc.IsTombstone(k) {
-						seenKeys[key] = struct{}{}
-					} else {
-						delete(seenKeys, key)
-					}
-				}
-				return nil
-			}); err != nil {
-				return fmt.Errorf("error during bucket key iteration, name: %q err: %w", string(next), err)
-			}
-		}
-		return nil
-	}); err != nil {
-		return ds, err
-	}
-
-	ds.TotalKey = len(seenKeys)
-	ds.Hash = h.Sum32()
-	return ds, nil
-}
-
-func bytesToRev(b []byte) (rev mvcc.Revision, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%s", r)
-		}
-	}()
-	return mvcc.BytesToRev(b), err
+	return clientsnapshot.SaveWithVersion(ctx, s.lg, cfg, dbPath)
 }
 
 // MemberInfo describes a cluster member exactly as the leader knows it: the
@@ -273,6 +164,9 @@ type RestoreConfig struct {
 // node impersonates one that has already applied the leader's snapshot at the
 // db's own consistent index/term, so on boot the leader catches it up over the
 // raft log (never a MsgSnap).
+//
+// Fork of upstream Restore: upstream bootstraps a fresh cluster from PeerURLs +
+// InitialCluster; this builds the cluster from the leader's verbatim membership.
 func (s *v3Manager) Restore(cfg RestoreConfig) error {
 	if cfg.SelfID == 0 {
 		return fmt.Errorf("restore: SelfID required")
@@ -290,7 +184,7 @@ func (s *v3Manager) Restore(cfg RestoreConfig) error {
 		})
 	}
 	// Build the cluster with the leader's verbatim IDs and pin our local ID +
-	// the live cluster ID (NewClusterFromMembers would otherwise derive its own).
+	// the live cluster ID (NewClusterFromURLsMap would otherwise derive its own).
 	s.cl = membership.NewClusterFromMembers(s.lg, types.ID(cfg.ClusterID), membs)
 	s.cl.SetID(types.ID(cfg.SelfID), types.ID(cfg.ClusterID))
 
@@ -380,6 +274,10 @@ func (s *v3Manager) saveDB() error {
 	return nil
 }
 
+// copyAndVerifyDB mirrors upstream, with one change: a named return that
+// captures a db.Close error (CodeQL flagged the dropped writable-handle close —
+// the seeded db is reopened immediately by saveDB, so a silent flush loss would
+// corrupt it).
 func (s *v3Manager) copyAndVerifyDB() (err error) {
 	srcf, ferr := os.Open(s.srcDbPath)
 	if ferr != nil {
@@ -409,9 +307,6 @@ func (s *v3Manager) copyAndVerifyDB() (err error) {
 	if dberr != nil {
 		return dberr
 	}
-	// Surface a close error (e.g. a failed flush of the bytes copied below) — the
-	// seeded db is reopened immediately by saveDB, so a silent loss would corrupt
-	// it. Don't clobber an earlier error.
 	defer func() {
 		if cerr := db.Close(); cerr != nil && err == nil {
 			err = cerr
@@ -461,6 +356,8 @@ func (s *v3Manager) copyAndVerifyDB() (err error) {
 // readConsistentIndex reads the consistent index and term persisted in the
 // copied snapshot db. That index is the leader raft index whose applied state
 // the db reflects, which is exactly where the seeded node must claim to be.
+//
+// New in the fork: upstream always anchors at index 1.
 func (s *v3Manager) readConsistentIndex() (uint64, uint64) {
 	be := backend.NewDefaultBackend(s.lg, s.outDbPath(), backend.WithMmapSize(s.initialMmapSize))
 	defer be.Close()
@@ -476,6 +373,9 @@ func (s *v3Manager) readConsistentIndex() (uint64, uint64) {
 // (verbatim IDs, learner status preserved), and there are no log entries after
 // the snapshot. On boot the node is a follower at snapIndex and the leader
 // replicates forward over the log — never a MsgSnap.
+//
+// Fork of upstream saveWALAndSnap, which writes ConfChange entries from index 1
+// with a voters-only ConfState (and is explicitly TODO'd as ignoring learners).
 func (s *v3Manager) saveWALAndSnap(snapIndex, snapTerm uint64) (*raftpb.HardState, error) {
 	if err := fileutil.CreateDirAll(s.lg, s.walDir); err != nil {
 		return nil, err
