@@ -1,6 +1,8 @@
 // Command load-test brings up a node, kicks off read/write load as soon as it's
-// up, joins a second node under load, and runs for 15 seconds — printing
-// throughput, latency, and the member list every couple seconds.
+// up, then grows the cluster by joining a new node every 2s under that load for
+// 30s — printing throughput, latency, and the member list every couple seconds.
+// Each join is seeded from a leader snapshot (see Join), so growing under load
+// never triggers a raft snapshot to the new node.
 package main
 
 import (
@@ -18,13 +20,8 @@ func main() {
 
 	load := examples.NewLoad(ctx, 2*time.Second)
 
-	// TEMP: info logging to capture etcd's snapshot decision on Windows
-	// ("sending merged snapshot" on the leader, "applying snapshot" on the
-	// joiner) — diagnosing the Windows snapshot-backend panic.
-	const lvl = "info"
-
 	// Node 1 up — registering it kicks off load immediately.
-	e1 := libetcd.New().WithLog(lvl, log.Writer()).WithContext(ctx)
+	e1 := libetcd.New().WithContext(ctx)
 	if err := e1.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -38,7 +35,7 @@ func main() {
 		case <-ctx.Done():
 			return // cancelling ctx gracefully stops every node
 		case <-ticker.C:
-			n := libetcd.New().WithLog(lvl, log.Writer()).WithContext(ctx)
+			n := libetcd.New().WithContext(ctx)
 			if err := n.Join(e1); err != nil {
 				if ctx.Err() != nil {
 					return // test over

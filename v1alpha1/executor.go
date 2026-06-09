@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 
 	v1 "github.com/cnuss/libetcd/v1"
+	"github.com/cnuss/libetcd/v1alpha1/hack"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -150,6 +154,17 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return nil
 	})
 
+	// Seed this node's data directory from a leader snapshot so it boots already
+	// caught up to the leader's current raft index. Without this, a from-empty
+	// joiner into a cluster that has applied >100 entries is bootstrapped by the
+	// leader with a *raft snapshot* — and applying that snapshot panics the
+	// embedded host on Windows (etcd renames the snapshot db over the still-open
+	// backend; "Access is denied"). Seeding makes the leader catch us up over the
+	// log instead. See v1alpha1/hack/snapshot.go.
+	if err := b.seedFromLeader(ctx, mc, id, name); err != nil {
+		return fmt.Errorf("join: seed from leader: %w", err)
+	}
+
 	if err := b.Start(); err != nil {
 		return fmt.Errorf("join: start: %w", err)
 	}
@@ -183,6 +198,80 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return fmt.Errorf("join: promote member %x: %w", id, err)
 	}
 	return nil
+}
+
+// seedFromLeader pulls a point-in-time db snapshot from the leader and restores
+// it into this node's data directory, pre-seeded with the leader-assigned member
+// ID (selfID), the live cluster ID, and the full membership (learner status
+// preserved). The seeded node boots as a follower already applied to the
+// snapshot's raft index, so the leader replicates forward over the log and never
+// sends a raft snapshot. It must run after the learner-add (so selfID and the
+// membership are known) and before Start.
+func (b *EtcdImpl) seedFromLeader(ctx context.Context, mc *clientv3.Client, selfID uint64, selfName string) error {
+	b.mu.Lock()
+	lg := b.cfg.GetLogger()
+	dir := b.cfg.Dir
+	b.mu.Unlock()
+
+	// A concrete, empty data directory for the restore target.
+	if dir == "" {
+		d, err := os.MkdirTemp("", "libetcd-")
+		if err != nil {
+			return fmt.Errorf("data dir: %w", err)
+		}
+		dir = d
+		b.mutate(func() error { b.cfg.Dir = dir; return nil })
+	}
+
+	// Full membership (including this node, still a learner) and the cluster ID,
+	// taken verbatim from the leader so the seed agrees on every ID.
+	ml, err := mc.MemberList(ctx)
+	if err != nil {
+		return fmt.Errorf("member list: %w", err)
+	}
+	members := make([]hack.MemberInfo, 0, len(ml.Members))
+	for _, m := range ml.Members {
+		name := m.Name
+		if m.ID == selfID {
+			name = selfName // the leader records the new learner with an empty name
+		}
+		members = append(members, hack.MemberInfo{
+			ID:         m.ID,
+			Name:       name,
+			PeerURLs:   m.PeerURLs,
+			ClientURLs: m.ClientURLs,
+			IsLearner:  m.IsLearner,
+		})
+	}
+
+	eps := mc.Endpoints()
+	if len(eps) == 0 {
+		return errors.New("leader client has no endpoint")
+	}
+
+	// Pull the snapshot into a scratch dir (kept out of the restore target, which
+	// must be empty).
+	scratch, err := os.MkdirTemp("", "libetcd-seed-")
+	if err != nil {
+		return fmt.Errorf("scratch dir: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	dbPath := filepath.Join(scratch, "leader.db")
+
+	mgr := hack.NewV3(lg)
+	leaderCfg := clientv3.Config{Endpoints: []string{eps[0]}, DialTimeout: 5 * time.Second, Logger: lg}
+	if _, err := mgr.Save(ctx, leaderCfg, dbPath); err != nil {
+		return fmt.Errorf("snapshot save: %w", err)
+	}
+
+	return mgr.Restore(hack.RestoreConfig{
+		SnapshotPath:  dbPath,
+		Name:          selfName,
+		SelfID:        selfID,
+		ClusterID:     ml.Header.ClusterId,
+		Members:       members,
+		OutputDataDir: dir,
+	})
 }
 
 // retry calls fn every 500ms until it returns true, or ctx is done (whose error
