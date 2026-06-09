@@ -126,6 +126,7 @@ type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
     Voters() *clientv3.Client  // networked client (dials voting members)
+    Peers() types.URLsMap      // live peer topology via MemberList (name -> peer URLs)
 }
 ```
 
