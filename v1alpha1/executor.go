@@ -158,6 +158,9 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 	// in sync with the leader (same raft term, index within 90%), attempt the
 	// promotion; etcd also rejects promotion until the learner is in sync, so
 	// retrying covers both. Blocks until voting.
+	//
+	// leaderSt comes from mc (the networked, leader-pinned client) — note Self()
+	// can't report the leader, since its loopback ignores the endpoint arg.
 	self := b.Self()
 	leaderEP := ""
 	if eps := mc.Endpoints(); len(eps) > 0 {
