@@ -169,29 +169,16 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return fmt.Errorf("join: start: %w", err)
 	}
 
-	// Promote learner -> voting once it's caught up: each tick, if this node is
-	// in sync with the leader (same raft term, index within 90%), attempt the
-	// promotion; etcd also rejects promotion until the learner is in sync, so
-	// retrying covers both. Blocks until voting.
+	// Promote learner -> voting. The seed left this node already caught up to the
+	// leader's raft index, so promotion succeeds promptly. etcd rejects promotion
+	// of a learner that isn't in sync with the leader, so simply retrying the
+	// transient rejection is sufficient — no need to poll raft indices.
 	//
-	// leaderSt comes from mc (the networked, leader-pinned client) — note Self()
-	// can't report the leader, since its loopback ignores the endpoint arg.
-	self := b.Self()
-	leaderEP := ""
-	if eps := mc.Endpoints(); len(eps) > 0 {
-		leaderEP = eps[0]
-	}
+	// We deliberately do NOT compare Maintenance.Status here: under heavy write
+	// load, Status -> StorageVersion reads the backend's shared read tx, which etcd
+	// transiently nils during a commit, and a loopback Status racing that window
+	// panics the host (a separate etcd bug). MemberPromote alone is the gate.
 	if err := retry(ctx, func() bool {
-		if self == nil {
-			return false
-		}
-		leaderSt, lErr := mc.Status(ctx, leaderEP)
-		selfSt, sErr := self.Status(ctx, "") // loopback ignores the endpoint arg
-		if lErr != nil || sErr != nil ||
-			selfSt.RaftTerm != leaderSt.RaftTerm ||
-			selfSt.RaftIndex*100 < leaderSt.RaftIndex*90 {
-			return false
-		}
 		_, err := mc.MemberPromote(ctx, id)
 		return err == nil
 	}); err != nil {
