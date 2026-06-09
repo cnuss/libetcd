@@ -121,27 +121,29 @@ For the file-by-file map, see
 
 ## API at a glance
 
-`New()` returns the full node — an `Etcd`, composed of three interfaces:
+`New()` returns the full node (an `Etcd`); `From()` returns a join-only node (an
+`EtcdPeer`):
 
 ```go
-func New() Etcd
+func New() Etcd                 // a fresh, startable node
+func From(peers Peers) EtcdPeer // a node that joins the cluster at those peer URLs
 
 type Etcd interface {
-    Server   // server-side handles
-    Client   // clientv3 clients
-    Builder  // configuration
-    Executor // lifecycle
+    Server        // server-side handles
+    Client        // clientv3 clients
+    Builder[Etcd] // configuration (setters chain back to Etcd)
+    Executor      // lifecycle
 }
 
-// Builder — configure; each returns the node (Etcd), mutating it in place.
-type Builder interface {
-    WithName(name string) Etcd                // member name; default: a unique generated name
-    WithDir(dir string) Etcd                  // data dir; default: a fresh temp dir
-    WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
-    WithLog(level string, w io.Writer) Etcd   // route logs to w at level; silent by default
-    WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
-    WithClientServing(l net.Listener, srv *http.Server) Etcd // client listener + server (v3 API)
-    WithPeerServing(l net.Listener, srv *http.Server) Etcd   // peer listener + server; raft + app share a port
+// Builder[T] — configure; each setter returns T (Etcd or EtcdPeer), mutating in place.
+type Builder[T any] interface {
+    WithName(name string) T                // member name; default: a unique generated name
+    WithDir(dir string) T                  // data dir; default: a fresh temp dir
+    WithClusterToken(token string) T       // initial-cluster token; default "libetcd-cluster"
+    WithLog(level string, w io.Writer) T   // route logs to w at level; silent by default
+    WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
+    WithClientServing(l net.Listener, srv *http.Server) T // client listener + server (v3 API)
+    WithPeerServing(l net.Listener, srv *http.Server) T   // peer listener + server; raft + app share a port
 }
 
 // Executor — lifecycle.
@@ -173,11 +175,19 @@ type Client interface {
 }
 ```
 
-`From(peers)` returns an `EtcdPeer` — a join-only node (the `With*` setters plus
-`Join()`, no `Start`) for joining the cluster reachable at those peer URLs:
+`EtcdPeer` (from `From`) is a join-only node: the `Client` accessors and `Builder`
+setters (chaining back to `EtcdPeer`), plus `Join` — but no `Start`.
 
 ```go
-func From(peers Peers) EtcdPeer // Peers is []*url.URL
+// EtcdPeer — join an existing cluster from a list of peer URLs.
+type EtcdPeer interface {
+    Client            // Self / Leader / Voters / Peers
+    Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
+    Join() error      // discover a client endpoint via the peers' /members, add as
+                      // learner, seed from a leader snapshot, promote to voting
+}
+
+type Peers []*url.URL // member peer (raft) URLs
 ```
 
 ## Examples

@@ -11,11 +11,14 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Façade (`New`)                                 | [`lib.go`](./lib.go)                                             |
-| Interfaces (`Server`/`Client`/`Builder`/`Executor`/`Etcd`) | [`v1/v1.go`](./v1/v1.go)                                    |
-| Type (`EtcdImpl`) + `New`                      | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
+| Interfaces (`Server`/`Client`/`Builder`/`Executor`/`Etcd`/`EtcdPeer`) | [`v1/v1.go`](./v1/v1.go)                             |
+| Type (`EtcdImpl`) + `New` + `From`             | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder methods + config machinery             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Server + Client handles (accessor.go)             | [`v1alpha1/accessor.go`](./v1alpha1/accessor.go)                |
-| Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
+| Server handles                                 | [`v1alpha1/server.go`](./v1alpha1/server.go)                     |
+| Client accessors (`Self`/`Leader`/`Voters`/`Peers`) | [`v1alpha1/client.go`](./v1alpha1/client.go)               |
+| Executor lifecycle (`Start`/`Stop`/`Join`)     | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
+| Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v1alpha1/peer.go`](./v1alpha1/peer.go)                         |
+| Snapshot seed fork (join)                      | [`v1alpha1/snapshot/`](./v1alpha1/snapshot)                      |
 | gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
 | Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
