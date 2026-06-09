@@ -31,6 +31,8 @@ type Load struct {
 	mu      sync.Mutex
 	targets []v1.Etcd
 	start   time.Time
+
+	cli atomic.Value // *clientv3.Client, updated on each WithEtcd; workers load from it on each roundtrip
 }
 
 // NewLoad returns a Load that reports every interval until ctx is cancelled.
@@ -41,16 +43,14 @@ func NewLoad(ctx context.Context, interval time.Duration) *Load {
 // WithEtcd registers e as a load target and kicks off load against it. The first
 // call also starts the periodic reporter. Returns the Load for chaining.
 func (l *Load) WithEtcd(e v1.Etcd) *Load {
-	cli := e.Client()
-	if cli == nil {
-		return l
-	}
+	l.cli.Store(e.Client())
+
 	l.mu.Lock()
 	l.targets = append(l.targets, e)
 	l.mu.Unlock()
 
 	for w := range loadWorkers {
-		go l.worker(cli, w)
+		go l.worker(w)
 	}
 	l.once.Do(func() {
 		l.start = time.Now()
@@ -60,10 +60,11 @@ func (l *Load) WithEtcd(e v1.Etcd) *Load {
 }
 
 // worker hammers Put+Get round-trips on a per-worker key until ctx is cancelled.
-func (l *Load) worker(cli *clientv3.Client, w int) {
+func (l *Load) worker(w int) {
 	key := fmt.Sprintf("load/%d", w)
 	for l.ctx.Err() == nil {
 		start := time.Now()
+		cli := l.cli.Load().(*clientv3.Client)
 		_, err := cli.Put(l.ctx, key, "v")
 		if err == nil {
 			_, err = cli.Get(l.ctx, key)

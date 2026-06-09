@@ -89,13 +89,24 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 		if m.Name == "" {
 			continue // not-yet-started member; has no usable name
 		}
+		if m.IsLearner {
+			continue // learners don't serve raft, so ignore them in the initial cluster
+		}
 		for _, pu := range m.PeerURLs {
 			parts = append(parts, m.Name+"="+pu)
 		}
 	}
 
+	// Target the leader directly for the membership changes. clientv3 would
+	// forward them anyway, but a leader-pinned client avoids the extra hop.
+	mc := with
+	if lc := b.leaderClient(ctx, with, ml); lc != nil {
+		mc = lc
+		defer mc.Close()
+	}
+
 	// Add self as a learner.
-	add, err := with.MemberAddAsLearner(ctx, []string{selfPeer})
+	add, err := mc.MemberAddAsLearner(ctx, []string{selfPeer})
 	if err != nil {
 		return fmt.Errorf("join: member add: %w", err)
 	}
@@ -118,7 +129,44 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 	}
 
 	// Promote learner -> voting once it's caught up (blocks until done).
-	return b.promote(ctx, with, id)
+	return b.promote(ctx, mc, id)
+}
+
+// leaderClient finds the cluster leader (via Status on with) and returns a new
+// client pinned to the leader's client URLs, or nil if it can't be determined.
+// The caller closes the returned client.
+func (b *EtcdImpl) leaderClient(ctx context.Context, with *clientv3.Client, ml *clientv3.MemberListResponse) *clientv3.Client {
+	eps := with.Endpoints()
+	if len(eps) == 0 {
+		return nil
+	}
+	st, err := with.Status(ctx, eps[0])
+	if err != nil {
+		return nil
+	}
+	var leader []string
+	for _, m := range ml.Members {
+		if m.ID == st.Leader {
+			leader = m.ClientURLs
+			break
+		}
+	}
+	if len(leader) == 0 {
+		return nil
+	}
+
+	b.mu.Lock()
+	lg := b.cfg.GetLogger()
+	b.mu.Unlock()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   leader,
+		DialTimeout: 5 * time.Second,
+		Logger:      lg,
+	})
+	if err != nil {
+		return nil
+	}
+	return cli
 }
 
 // promote retries MemberPromote until it succeeds (etcd rejects promotion until
