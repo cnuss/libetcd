@@ -57,6 +57,50 @@ func main() {
 
 (Full source: [`examples/single-node/main.go`](./examples/single-node/main.go).)
 
+### Join an existing cluster
+
+Give `From` the peer (raft) URLs of any current members — a hardcoded list, from
+config, or another node's `Peers()`. `Join` discovers a client endpoint by
+scraping the peers' `/members`, adds the node as a learner, catches it up, and
+promotes it to a voting member:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"net/url"
+
+	"github.com/cnuss/libetcd"
+	v1 "github.com/cnuss/libetcd/v1"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Peer URLs of members already in the cluster.
+	var peers v1.Peers
+	for _, raw := range []string{"http://10.0.0.1:2380", "http://10.0.0.2:2380"} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			log.Fatal(err)
+		}
+		peers = append(peers, u)
+	}
+
+	node := libetcd.From(peers).WithContext(ctx)
+	if err := node.Join(); err != nil {
+		log.Fatal(err)
+	}
+
+	// node is now a voting member; Self reads the replicated keyspace.
+	node.Self().Put(ctx, "joined", "true")
+}
+```
+
+(Full source: [`examples/join-from-peers/main.go`](./examples/join-from-peers/main.go).)
+
 ## Layout
 
 Three packages, stable/alpha versioning:
@@ -125,25 +169,34 @@ type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
     Voters() *clientv3.Client  // networked client (dials voting members)
-    Peers() types.URLsMap      // live peer topology via MemberList (name -> peer URLs)
+    Peers() Peers              // members' peer (raft) URLs; feed to From
 }
+```
+
+`From(peers)` returns an `EtcdPeer` — a join-only node (the `With*` setters plus
+`Join()`, no `Start`) for joining the cluster reachable at those peer URLs:
+
+```go
+func From(peers Peers) EtcdPeer // Peers is []*url.URL
 ```
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example       | Demonstrates                                                     |
-| ------------- | --------------------------------------------------------------- |
-| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
-| `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key. |
-| `load-test`   | Grow a cluster under read/write load for 30s; print throughput + latency. |
+| Example           | Demonstrates                                                     |
+| ----------------- | --------------------------------------------------------------- |
+| `single-node`     | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
+| `multi-node`      | Bring up a node, `Join` a second to it, read the replicated key. |
+| `join-from-peers` | Join a node to a cluster from peer URLs via `From(...).Join()`.  |
+| `load-test`       | Grow a cluster under read/write load for 30s; print throughput + latency. |
 
 Run one locally:
 
 ```sh
 make run single-node
 make run multi-node
+make run join-from-peers
 make run load-test
 ```
 

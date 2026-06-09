@@ -37,6 +37,10 @@ func New() v1.Etcd {
 	return v1alpha1.New()
 }
 
+// From returns a join-only node for an existing cluster reachable at the given
+// peer URLs (e.g. another node's Peers()). Configure it with the With* methods,
+// then call Join; it discovers a client endpoint by scraping the peers' /members
+// handlers and performs a managed learner-join.
 func From(peers v1.Peers) v1.EtcdPeer {
 	return v1alpha1.From(peers)
 }
