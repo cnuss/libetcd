@@ -100,7 +100,6 @@ func New() *EtcdImpl {
 	cfg.InitialElectionTickAdvance = false
 	cfg.ElectionMs = 10000
 	cfg.LogLevel = "fatal"
-	cfg.MemoryMlock = true
 	cfg.MaxLearners = math.MaxInt
 	cfg.SnapshotCatchUpEntries = 100000
 	cfg.SnapshotCount = 100000

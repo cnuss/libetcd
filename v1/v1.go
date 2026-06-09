@@ -75,7 +75,7 @@ type Client interface {
 // Defaults (no method calls): a temp data dir, client URL
 // http://localhost:2379, peer URL http://localhost:2380, a new cluster, and log
 // level "fatal". New also applies opinionated tuning for embedded use (longer
-// raft tick/election, generous snapshot retention, memory mlock).
+// raft tick/election, generous snapshot retention).
 type Builder interface {
 	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) Etcd
