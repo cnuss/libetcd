@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
@@ -25,7 +25,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2025-vs2026]
+        # x64 + arm64 across linux, windows, and macos, all pinned to discrete
+        # image labels (no *-latest aliases) so every cell names an explicit
+        # version — the GitHub-hosted ARM runners (free for public repos) only
+        # exist as discrete labels, so pinning the rest keeps the matrix
+        # consistent. macos-26-intel is x64 (Intel), macos-26 is arm64 (Apple
+        # Silicon). Bumping an image label renames its check context, so update
+        # the branch-protection required contexts when bumping. gofmt runs
+        # Linux-only (see below), covering both Linux cells.
+        os:
+          - ubuntu-24.04
+          - windows-2025
+          - ubuntu-24.04-arm
+          - windows-11-arm
+          - macos-26-intel
+          - macos-26
         # "min" reads the floor from go.mod (the `go X.Y` directive); "stable"
         # is whatever setup-go's `stable` alias resolves to. Keeping "min"
         # symbolic avoids drift between go.mod and the workflow when the floor
