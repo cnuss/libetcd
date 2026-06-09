@@ -380,7 +380,7 @@ func (s *v3Manager) saveDB() error {
 	return nil
 }
 
-func (s *v3Manager) copyAndVerifyDB() error {
+func (s *v3Manager) copyAndVerifyDB() (err error) {
 	srcf, ferr := os.Open(s.srcDbPath)
 	if ferr != nil {
 		return ferr
@@ -409,7 +409,14 @@ func (s *v3Manager) copyAndVerifyDB() error {
 	if dberr != nil {
 		return dberr
 	}
-	defer db.Close()
+	// Surface a close error (e.g. a failed flush of the bytes copied below) — the
+	// seeded db is reopened immediately by saveDB, so a silent loss would corrupt
+	// it. Don't clobber an earlier error.
+	defer func() {
+		if cerr := db.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	if _, err := io.Copy(db, srcf); err != nil {
 		return err

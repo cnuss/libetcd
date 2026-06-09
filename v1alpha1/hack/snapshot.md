@@ -53,8 +53,13 @@ Line/structure references are against `v3_snapshot.go` @ v3.6.12.
   `unsafeMarkRevisionCompacted`, `unsafeGetLatestRevision`, and the
   `RevisionBump` / `MarkCompacted` config fields + their call in `Restore`.
 
-`Save`, `Status`, `hasChecksum`, `bytesToRev`, `outDbPath`, `saveDB`,
-`copyAndVerifyDB`, and `updateCIndex` are **unchanged** from upstream.
+`Save`, `Status`, `hasChecksum`, `bytesToRev`, `outDbPath`, `saveDB`, and
+`updateCIndex` are **unchanged** from upstream.
+
+`copyAndVerifyDB` is unchanged except for one fix: its writable-db `defer
+db.Close()` is replaced with a named-return defer that surfaces the close error
+(CodeQL flagged the dropped error — the seeded db is reopened immediately by
+`saveDB`, so a silently-failed flush would corrupt it).
 
 ### `v3Manager` struct
 
@@ -389,7 +394,7 @@ every other hunk is the functional change.
  	)
  
  	return verify.VerifyIfEnabled(verify.Config{
-@@ -368,70 +380,6 @@
+@@ -368,71 +380,7 @@
  	return nil
  }
  
@@ -457,10 +462,28 @@ every other hunk is the functional change.
 -	return latest, err
 -}
 -
- func (s *v3Manager) copyAndVerifyDB() error {
+-func (s *v3Manager) copyAndVerifyDB() error {
++func (s *v3Manager) copyAndVerifyDB() (err error) {
  	srcf, ferr := os.Open(s.srcDbPath)
  	if ferr != nil {
-@@ -503,15 +451,30 @@
+ 		return ferr
+@@ -461,7 +409,14 @@
+ 	if dberr != nil {
+ 		return dberr
+ 	}
+-	defer db.Close()
++	// Surface a close error (e.g. a failed flush of the bytes copied below) — the
++	// seeded db is reopened immediately by saveDB, so a silent loss would corrupt
++	// it. Don't clobber an earlier error.
++	defer func() {
++		if cerr := db.Close(); cerr != nil && err == nil {
++			err = cerr
++		}
++	}()
+ 
+ 	if _, err := io.Copy(db, srcf); err != nil {
+ 		return err
+@@ -503,15 +458,30 @@
  	return nil
  }
  
@@ -496,7 +519,7 @@ every other hunk is the functional change.
  	be := backend.NewDefaultBackend(s.lg, s.outDbPath(), backend.WithMmapSize(s.initialMmapSize))
  	defer be.Close()
  	s.cl.SetBackend(schema.NewMembershipBackend(s.lg, be))
-@@ -519,8 +482,7 @@
+@@ -519,8 +489,7 @@
  		s.cl.AddMember(m, true)
  	}
  
@@ -506,7 +529,7 @@ every other hunk is the functional change.
  	metadata, merr := md.Marshal()
  	if merr != nil {
  		return nil, merr
-@@ -531,54 +493,28 @@
+@@ -531,54 +500,28 @@
  	}
  	defer w.Close()
  
@@ -574,7 +597,7 @@ every other hunk is the functional change.
  			ConfState: confState,
  		},
  	}
-@@ -586,8 +522,8 @@
+@@ -586,8 +529,8 @@
  	if err := sn.SaveSnap(raftSnap); err != nil {
  		return nil, err
  	}
