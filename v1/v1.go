@@ -89,11 +89,12 @@ type Builder interface {
 	WithPeerListener(l net.Listener) Etcd
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
 	WithClusterToken(token string) Etcd
-	// WithSnapshotCount sets how many applied entries trigger a raft snapshot
-	// (and log compaction). Default 10000. Raise it to defer snapshots — useful
-	// for short-lived clusters where new members should catch up by log replay
-	// rather than snapshot transfer.
-	WithSnapshotCount(n uint64) Etcd
+	// WithSnapshotCatchUpEntries sets how many raft log entries are retained
+	// after a snapshot for slow/joining followers (default 5000). Raise it so a
+	// new member catches up by log replay instead of a snapshot transfer —
+	// useful for short-lived clusters, and it avoids an embedded snapshot-apply
+	// failure on Windows (the backend db can't be renamed-over while mmap'd).
+	WithSnapshotCatchUpEntries(n uint64) Etcd
 	// WithStrict toggles etcd's strict reconfiguration check, which rejects
 	// membership changes that would risk quorum. Off by default (eases rapid
 	// joins); set true for production safety.

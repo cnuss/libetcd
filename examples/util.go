@@ -37,15 +37,16 @@ func NewLoad(ctx context.Context, interval time.Duration) *Load {
 	return &Load{ctx: ctx, interval: interval}
 }
 
-// WithEtcd registers e as a load target and kicks off load against it. The first
-// call also starts the periodic reporter. Returns the Load for chaining.
+// WithEtcd points the load at e (newest registered node wins) and, on the first
+// call, starts the fixed worker pool and the reporter. Workers are spawned once,
+// not per node, so the leader isn't hammered ever harder as the cluster grows.
 func (l *Load) WithEtcd(e v1.Etcd) *Load {
 	l.cli.Store(e.Voters())
-	for w := range loadWorkers {
-		go l.worker(w)
-	}
 	l.once.Do(func() {
 		l.start = time.Now()
+		for w := range loadWorkers {
+			go l.worker(w)
+		}
 		go l.report()
 	})
 	return l

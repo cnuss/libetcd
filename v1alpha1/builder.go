@@ -56,9 +56,10 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 	return b
 }
 
-// WithSnapshotCount sets how many applied entries trigger a raft snapshot.
-func (b *EtcdImpl) WithSnapshotCount(n uint64) v1.Etcd {
-	b.mutate(func() error { b.cfg.SnapshotCount = n; return nil })
+// WithSnapshotCatchUpEntries sets how many raft log entries are retained after a
+// snapshot for slow/joining followers to catch up by log replay.
+func (b *EtcdImpl) WithSnapshotCatchUpEntries(n uint64) v1.Etcd {
+	b.mutate(func() error { b.cfg.SnapshotCatchUpEntries = n; return nil })
 	return b
 }
 

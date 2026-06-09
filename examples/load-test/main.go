@@ -22,10 +22,10 @@ func main() {
 	// nodes joining under load catch up by log replay instead of snapshot
 	// transfer (embedded snapshot apply can't reopen its mmap'd bbolt db on
 	// Windows).
-	const snapshotCount = 1_000_000
+	const snapshotCatchUp = 100_000_000
 
 	// Node 1 up — registering it kicks off load immediately.
-	e1 := libetcd.New().WithSnapshotCount(snapshotCount).WithContext(ctx)
+	e1 := libetcd.New().WithSnapshotCatchUpEntries(snapshotCatchUp).WithContext(ctx)
 	if err := e1.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func main() {
 		case <-ctx.Done():
 			return // cancelling ctx gracefully stops every node
 		case <-ticker.C:
-			n := libetcd.New().WithSnapshotCount(snapshotCount).WithContext(ctx)
+			n := libetcd.New().WithSnapshotCatchUpEntries(snapshotCatchUp).WithContext(ctx)
 			if err := n.Join(e1); err != nil {
 				if ctx.Err() != nil {
 					return // test over
