@@ -56,6 +56,12 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 	return b
 }
 
+// WithSnapshotCount sets how many applied entries trigger a raft snapshot.
+func (b *EtcdImpl) WithSnapshotCount(n uint64) v1.Etcd {
+	b.mutate(func() error { b.cfg.SnapshotCount = n; return nil })
+	return b
+}
+
 // WithStrict toggles etcd's strict reconfiguration check.
 func (b *EtcdImpl) WithStrict(strict bool) v1.Etcd {
 	b.mutate(func() error { b.cfg.StrictReconfigCheck = strict; return nil })

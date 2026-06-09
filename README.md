@@ -96,6 +96,7 @@ type Builder interface {
     WithClientListener(l net.Listener) Etcd   // client URL from a listener (https if TLS-wrapped)
     WithPeerListener(l net.Listener) Etcd     // peer URL from a listener
     WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
+    WithSnapshotCount(n uint64) Etcd          // entries per raft snapshot; default 10000
     WithStrict(strict bool) Etcd              // strict reconfig check; default off
     WithLogLevel(level string) Etcd           // server log level; default "fatal"
     WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
