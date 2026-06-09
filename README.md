@@ -96,7 +96,7 @@ type Builder interface {
     WithClientListener(l net.Listener) Etcd   // client URL from a listener (https if TLS-wrapped)
     WithPeerListener(l net.Listener) Etcd     // peer URL from a listener
     WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
-    WithLogLevel(level string) Etcd           // server log level; default "fatal"
+    WithLog(level string, w io.Writer) Etcd   // route logs to w at level; silent by default
     WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
     WithClientHTTP(srv *http.Server) Etcd     // supply the client (v3 API) http.Server
     WithPeerHTTP(srv *http.Server) Etcd       // supply the peer (raft) http.Server

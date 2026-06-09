@@ -21,6 +21,7 @@ import (
 	"go.etcd.io/etcd/server/v3/config"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	v1 "github.com/cnuss/libetcd/v1"
@@ -99,11 +100,16 @@ func New() *EtcdImpl {
 	// Opinionated defaults
 	cfg.InitialElectionTickAdvance = false
 	cfg.ElectionMs = 10000
-	cfg.LogLevel = "fatal"
 	cfg.MaxLearners = math.MaxInt
 	cfg.SnapshotCatchUpEntries = 100000
 	cfg.SnapshotCount = 100000
 	cfg.TickMs = 1000
+
+	// Silent by default: install a no-op logger. WithLog replaces this builder to
+	// route logs to a writer. Setting the builder (not just LogLevel) is what makes
+	// the choice stick — setupLogging only auto-builds when ZapLoggerBuilder is nil.
+	cfg.Logger = "zap"
+	cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
 
 	b := &EtcdImpl{
 		cfg:    cfg,

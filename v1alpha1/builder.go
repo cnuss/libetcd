@@ -3,11 +3,16 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	"go.etcd.io/etcd/server/v3/config"
+	"go.etcd.io/etcd/server/v3/embed"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	v1 "github.com/cnuss/libetcd/v1"
 )
@@ -56,10 +61,40 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 	return b
 }
 
-// WithLogLevel sets the server log level.
-func (b *EtcdImpl) WithLogLevel(level string) v1.Etcd {
-	b.mutate(func() error { b.cfg.LogLevel = level; return nil })
+// WithLog routes the server's logs to writer at the given level (e.g. "debug",
+// "info", "warn", "error"). By default a node is silent (a no-op logger); call
+// WithLog to see etcd's internal logging, e.g. WithLog("debug", os.Stderr).
+//
+// It installs a fresh zap logger and replaces the config's ZapLoggerBuilder, so
+// it takes effect even after New() has seeded the default (silent) logger —
+// unlike setting LogLevel alone, which setupLogging ignores once a builder is set.
+func (b *EtcdImpl) WithLog(level string, writer io.Writer) v1.Etcd {
+	b.mutate(func() error {
+		lg, err := buildLogger(level, writer)
+		if err != nil {
+			return err
+		}
+		b.cfg.Logger = "zap"
+		b.cfg.LogLevel = level
+		b.cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(lg)
+		return nil
+	})
 	return b
+}
+
+// buildLogger constructs a zap logger writing to w at the given level. A nil
+// writer discards output. An unrecognized level is an error (latched as the
+// config cause), keeping the no-panic builder contract.
+func buildLogger(level string, w io.Writer) (*zap.Logger, error) {
+	lvl, err := zapcore.ParseLevel(level)
+	if err != nil {
+		return nil, fmt.Errorf("log level %q: %w", level, err)
+	}
+	if w == nil {
+		w = io.Discard
+	}
+	enc := zapcore.NewConsoleEncoder(logutil.DefaultZapLoggerConfig.EncoderConfig)
+	return zap.New(zapcore.NewCore(enc, zapcore.AddSync(w), lvl)), nil
 }
 
 // WithContext ties the node's lifetime to ctx: Start arranges a graceful Stop

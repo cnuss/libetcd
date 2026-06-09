@@ -11,7 +11,7 @@ import (
 // invalid (recover guard turns the Validate panic into a latched cause).
 func TestServerNilOnBadConfig(t *testing.T) {
 	e := v1alpha1.New()
-	e.WithLogLevel("not-a-level")
+	e.WithLog("not-a-level", nil)
 	if e.Server() != nil {
 		t.Fatal("expected nil server for invalid config")
 	}

@@ -153,8 +153,8 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
-		// Use the server's configured logger so the client honors WithLogLevel
-		// (default "fatal") instead of clientv3's default warn-level logger.
+		// Use the server's configured logger so the client honors WithLog
+		// (silent by default) instead of clientv3's default warn-level logger.
 		Logger: lg,
 	})
 	if err != nil {

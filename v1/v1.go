@@ -9,6 +9,7 @@ package v1
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 
@@ -73,9 +74,10 @@ type Client interface {
 // surfaced by the Server/Client accessors (e.g. Server returns nil) and by Start.
 //
 // Defaults (no method calls): a temp data dir, client URL
-// http://localhost:2379, peer URL http://localhost:2380, a new cluster, and log
-// level "fatal". New also applies opinionated tuning for embedded use (longer
-// raft tick/election, generous snapshot retention).
+// http://localhost:2379, peer URL http://localhost:2380, a new cluster, and no
+// logging (a silent node; call WithLog to enable it). New also applies
+// opinionated tuning for embedded use (longer raft tick/election, generous
+// snapshot retention).
 type Builder interface {
 	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) Etcd
@@ -90,8 +92,9 @@ type Builder interface {
 	WithPeerListener(l net.Listener) Etcd
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
 	WithClusterToken(token string) Etcd
-	// WithLogLevel sets the server log level (e.g. "error", "warn", "info").
-	WithLogLevel(level string) Etcd
+	// WithLog routes the server's logs to writer at the given level (e.g.
+	// "debug", "info", "warn", "error"). A node is silent by default.
+	WithLog(level string, writer io.Writer) Etcd
 	// WithContext ties the node's lifetime to ctx: when ctx is cancelled, the
 	// node is gracefully Stopped. Without it, the node runs until Stop is called.
 	WithContext(ctx context.Context) Etcd
