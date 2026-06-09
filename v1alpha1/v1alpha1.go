@@ -11,6 +11,7 @@ package v1alpha1
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -94,8 +95,11 @@ func New() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
 	cfg.Name = defaultName()
-	cfg.StrictReconfigCheck = false
-	cfg.LogLevel = "fatal" // quiet by default; override with WithLogLevel
+
+	// Opinionated defaults
+	cfg.LogLevel = "fatal"
+	cfg.MaxLearners = math.MaxInt
+
 	b := &EtcdImpl{
 		cfg:    cfg,
 		ctx:    ctx,

@@ -42,8 +42,9 @@ type Accessor interface {
 	// Loopback returns an in-process clientv3.Client wired to the minted server,
 	// minted at most once. Nil if the server can't be minted.
 	Loopback() *clientv3.Client
-	// Client returns a networked clientv3.Client dialing the node's client URLs,
-	// or nil if the configuration is invalid or the client can't be built.
+	// Client returns a networked clientv3.Client dialing the cluster's voting
+	// members (discovered via the loopback MemberList; learners excluded), or
+	// nil if the configuration is invalid or the client can't be built.
 	Client() *clientv3.Client
 	// ClientHTTP returns the http.Server for the client (v3 API) listener,
 	// resolved at most once: the one supplied via WithClientHTTP, or a default

@@ -114,7 +114,7 @@ type Accessor interface {
     Server() *etcdserver.EtcdServer  // the minted server (nil on bad config)
     GrpcServer() *grpc.Server        // v3 gRPC server (election + lock registered)
     Loopback() *clientv3.Client      // in-process client
-    Client() *clientv3.Client        // networked client (dials client URLs)
+    Client() *clientv3.Client        // networked client (dials voting members)
     ClientHandler() http.Handler     // gRPC (+REST gateway) handler, h2c-wrapped
     PeerHandler() http.Handler       // raft peer protocol handler
     ClientHTTP() *http.Server        // client http.Server (provided or default)

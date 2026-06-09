@@ -71,19 +71,41 @@ func (b *EtcdImpl) Loopback() *clientv3.Client {
 	return b.loopbackCli
 }
 
-// Client returns a networked clientv3.Client dialing the node's client URLs, or
-// nil if the configuration is invalid or the client can't be built (the
-// underlying error is latched as the builder context cause).
+// Client returns a networked clientv3.Client that dials the cluster's voting
+// members (learners excluded). It discovers the voters via the in-process
+// loopback client's MemberList; if that's unavailable it falls back to this
+// node's own client URLs. Returns nil if the configuration is invalid or the
+// client can't be built (the underlying error is latched as the builder cause).
 func (b *EtcdImpl) Client() *clientv3.Client {
 	b.mu.Lock()
 	cause := context.Cause(b.ctx)
-	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls)
+	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls) // fallback: self
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
 
 	if cause != nil {
 		return nil
 	}
+
+	// Prefer the cluster's voting members.
+	if lb := b.Loopback(); lb != nil {
+		ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+		ml, err := lb.MemberList(ctx)
+		cancel()
+		if err == nil {
+			var voters []string
+			for _, m := range ml.Members {
+				if m.IsLearner {
+					continue
+				}
+				voters = append(voters, m.ClientURLs...)
+			}
+			if len(voters) > 0 {
+				eps = voters
+			}
+		}
+	}
+
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
