@@ -1,11 +1,37 @@
 package v1alpha1
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
+	"fmt"
 	"net"
 	"net/url"
 	"reflect"
+	"time"
+
+	"go.etcd.io/etcd/pkg/v3/idutil"
 )
+
+// idGen is a process-global unique id generator using etcd's own idutil scheme
+// (random member-id prefix | timestamp | counter), seeded once at startup.
+var idGen = idutil.NewGenerator(randUint16(), time.Now())
+
+// randUint16 returns a random 16-bit value to seed the generator's prefix.
+func randUint16() uint16 {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return binary.BigEndian.Uint16(b[:])
+}
+
+// defaultName returns a unique member name from the global id generator, so a
+// node created with New() doesn't collide with others or trip etcd's "default
+// name" warning. WithName overrides it.
+func defaultName() string {
+	return fmt.Sprintf("node-%x", idGen.Next())
+}
 
 // listenerURL builds a URL from a listener's bound address, inferring the scheme
 // (https if the listener is TLS-wrapped, http otherwise).

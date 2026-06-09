@@ -57,10 +57,10 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 	return b.srv
 }
 
-// Loopback returns an in-process clientv3.Client wired to the minted server
+// Self returns an in-process clientv3.Client wired to this node's minted server
 // (via v3client), minted at most once. Returns nil if the server can't be
 // minted.
-func (b *EtcdImpl) Loopback() *clientv3.Client {
+func (b *EtcdImpl) Self() *clientv3.Client {
 	srv := b.Server()
 	if srv == nil {
 		return nil
@@ -71,21 +71,91 @@ func (b *EtcdImpl) Loopback() *clientv3.Client {
 	return b.loopbackCli
 }
 
-// Client returns a networked clientv3.Client dialing the node's client URLs, or
-// nil if the configuration is invalid or the client can't be built (the
-// underlying error is latched as the builder context cause).
-func (b *EtcdImpl) Client() *clientv3.Client {
+// Leader returns a clientv3.Client pinned to the cluster leader's client URLs,
+// discovered via this node's Self client, or nil if it can't be determined. The
+// caller closes the returned client.
+func (b *EtcdImpl) Leader() *clientv3.Client {
+	self := b.Self()
+	if self == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+	defer cancel()
+
+	ml, err := self.MemberList(ctx)
+	if err != nil {
+		return nil
+	}
+	st, err := self.Status(ctx, "") // loopback ignores the endpoint arg
+	if err != nil {
+		return nil
+	}
+	var leader []string
+	for _, m := range ml.Members {
+		if m.ID == st.Leader {
+			leader = m.ClientURLs
+			break
+		}
+	}
+	if len(leader) == 0 {
+		return nil
+	}
+
+	b.mu.Lock()
+	lg := b.cfg.GetLogger()
+	b.mu.Unlock()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   leader,
+		DialTimeout: 5 * time.Second,
+		Logger:      lg,
+	})
+	if err != nil {
+		return nil
+	}
+	return cli
+}
+
+// Voters returns a networked clientv3.Client that dials the cluster's voting
+// members (learners excluded). It discovers the voters via the in-process Self
+// client's MemberList; if that's unavailable it falls back to this node's own
+// client URLs. Returns nil if the configuration is invalid or the client can't
+// be built (the underlying error is latched as the builder cause).
+func (b *EtcdImpl) Voters() *clientv3.Client {
 	b.mu.Lock()
 	cause := context.Cause(b.ctx)
-	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls)
+	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls) // fallback: self
+	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
 
 	if cause != nil {
 		return nil
 	}
+
+	// Prefer the cluster's voting members.
+	if lb := b.Self(); lb != nil {
+		ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
+		ml, err := lb.MemberList(ctx)
+		cancel()
+		if err == nil {
+			var voters []string
+			for _, m := range ml.Members {
+				if m.IsLearner {
+					continue
+				}
+				voters = append(voters, m.ClientURLs...)
+			}
+			if len(voters) > 0 {
+				eps = voters
+			}
+		}
+	}
+
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
+		// Use the server's configured logger so the client honors WithLog
+		// (silent by default) instead of clientv3's default warn-level logger.
+		Logger: lg,
 	})
 	if err != nil {
 		b.cancel(fmt.Errorf("dial client: %w", err))
@@ -104,7 +174,7 @@ func (b *EtcdImpl) GrpcServer() *grpc.Server {
 	}
 	b.grpcOnce.Do(func() {
 		gs := v3rpc.Server(srv, nil, nil)
-		v3c := b.Loopback()
+		v3c := b.Self()
 		v3electionpb.RegisterElectionServer(gs, v3election.NewElectionServer(v3c))
 		v3lockpb.RegisterLockServer(gs, v3lock.NewLockServer(v3c))
 		b.grpcSrv = gs

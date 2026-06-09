@@ -11,15 +11,15 @@ import (
 // invalid (recover guard turns the Validate panic into a latched cause).
 func TestServerNilOnBadConfig(t *testing.T) {
 	e := v1alpha1.New()
-	e.WithLogLevel("not-a-level")
+	e.WithLog("not-a-level", nil)
 	if e.Server() != nil {
 		t.Fatal("expected nil server for invalid config")
 	}
 }
 
 // TestAutoSyncInitialCluster checks the single-member auto-sync keeps the
-// InitialCluster consistent when the name and peer URL change, so the node
-// starts (without it, NewServer fails: local name not in InitialCluster).
+// InitialCluster consistent when the peer URL changes, so the node starts
+// (without it, NewServer fails: local name not in InitialCluster).
 func TestAutoSyncInitialCluster(t *testing.T) {
 	lp, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -27,13 +27,13 @@ func TestAutoSyncInitialCluster(t *testing.T) {
 	}
 
 	e := v1alpha1.New()
-	e.WithDir(t.TempDir()).WithName("n1").WithPeerListener(lp)
+	e.WithDir(t.TempDir()).WithPeerListener(lp)
 	if err := e.Start(); err != nil {
 		t.Fatalf("auto-sync failed, Start: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Stop() })
 
 	if e.Server() == nil {
-		t.Fatal("nil server after WithName + WithPeerListener")
+		t.Fatal("nil server after WithPeerListener")
 	}
 }

@@ -5,12 +5,13 @@
 //
 // The implementation is split by interface: v1alpha1.go (the EtcdImpl type and
 // New), builder.go (the With* setters and the validate/derive machinery),
-// accessor.go (the read-side Accessor handles), and executor.go (the Executor
+// accessor.go (Server + Client handles), and executor.go (the Executor
 // lifecycle: Start/Stop).
 package v1alpha1
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -20,12 +21,13 @@ import (
 	"go.etcd.io/etcd/server/v3/config"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	v1 "github.com/cnuss/libetcd/v1"
 )
 
-// EtcdImpl implements the full Etcd surface (Accessor + Builder + Executor).
+// EtcdImpl implements the full Etcd surface (Server + Client + Builder + Executor).
 var _ v1.Etcd = (*EtcdImpl)(nil)
 
 // EtcdImpl is the default implementation. It holds a live embed.Config that each
@@ -59,6 +61,11 @@ type EtcdImpl struct {
 	peerHTTP       *http.Server
 	peerHTTPOnce   sync.Once
 
+	// clusterSet records that the cluster membership has been pinned (by Join,
+	// which joins an existing cluster). Until then, mutate auto-syncs
+	// InitialCluster to a single-member string. Once pinned, Join owns it.
+	clusterSet atomic.Bool
+
 	// serverOnce guards minting srv exactly once from the current srvcfg; a mint
 	// failure is latched as the context cause.
 	serverOnce sync.Once
@@ -79,15 +86,31 @@ type EtcdImpl struct {
 	loopbackCli  *clientv3.Client
 }
 
-// New returns an unconfigured EtcdImpl. The root libetcd.New façade wraps this
-// and returns it as the v1.Builder interface.
+// New returns an EtcdImpl with default configuration and a unique generated
+// member name. The root libetcd.New façade wraps this and returns it as the
+// v1.Etcd interface.
 //
 // The builder starts from embed.NewConfig() — the minimum configuration that
 // passes embed.Config.Validate() — and revalidates after every With* call.
 func New() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
-	cfg.LogLevel = "fatal" // quiet by default; override with WithLogLevel
+	cfg.Name = defaultName()
+
+	// Opinionated defaults
+	cfg.InitialElectionTickAdvance = false
+	cfg.ElectionMs = 10000
+	cfg.MaxLearners = math.MaxInt
+	cfg.SnapshotCatchUpEntries = 100000
+	cfg.SnapshotCount = 100000
+	cfg.TickMs = 1000
+
+	// Silent by default: install a no-op logger. WithLog replaces this builder to
+	// route logs to a writer. Setting the builder (not just LogLevel) is what makes
+	// the choice stick — setupLogging only auto-builds when ZapLoggerBuilder is nil.
+	cfg.Logger = "zap"
+	cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+
 	b := &EtcdImpl{
 		cfg:    cfg,
 		ctx:    ctx,

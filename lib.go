@@ -7,13 +7,13 @@
 //	e.WithDir("/tmp/data").WithClientListener(lc)
 //	if err := e.Start(); err != nil { /* ... */ }
 //	defer e.Stop()
-//	e.Loopback().Put(ctx, "k", "v")
+//	e.Self().Put(ctx, "k", "v")
 //
 // The package is split into three pieces:
 //
 //   - libetcd (this package) — thin façade exposing New. Stable surface for
 //     application code.
-//   - github.com/cnuss/libetcd/v1 — the stable Accessor, Builder, Executor, and
+//   - github.com/cnuss/libetcd/v1 — the stable Server, Client, Builder, Executor, and
 //     Etcd interfaces. Application code that wants to declare types against the
 //     contract imports this.
 //   - github.com/cnuss/libetcd/v1alpha1 — the current implementation. Internals
@@ -26,8 +26,8 @@ import (
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
-// New returns an unconfigured embedded etcd node. Configure it with the With*
-// methods (they mutate in place and chain), then call Start; Stop shuts it down.
+// New returns an embedded etcd node. Configure it with the With* methods (they
+// mutate in place and chain), then call Start; Stop shuts it down.
 //
 //	e := libetcd.New()
 //	e.WithDir("/tmp/data")

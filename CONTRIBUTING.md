@@ -11,10 +11,10 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Façade (`New`)                                 | [`lib.go`](./lib.go)                                             |
-| Interfaces (`Accessor`/`Builder`/`Executor`/`Etcd`) | [`v1/v1.go`](./v1/v1.go)                                    |
+| Interfaces (`Server`/`Client`/`Builder`/`Executor`/`Etcd`) | [`v1/v1.go`](./v1/v1.go)                                    |
 | Type (`EtcdImpl`) + `New`                      | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder methods + config machinery             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Accessor handles (Server/Client/handlers…)     | [`v1alpha1/accessor.go`](./v1alpha1/accessor.go)                |
+| Server + Client handles (accessor.go)             | [`v1alpha1/accessor.go`](./v1alpha1/accessor.go)                |
 | Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
 | gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
 | Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |
@@ -39,7 +39,7 @@ github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports the root (`libetcd.New()…`). Code that needs to declare
+Application code imports the root (`libetcd.New(name)…`). Code that needs to declare
 types against the interfaces imports `v1`. Direct access to the `EtcdImpl`
 struct lives in `v1alpha1`. The `v1alpha1` package wraps
 `go.etcd.io/etcd/server/v3/embed` — keep the `embed`-specific glue there, behind

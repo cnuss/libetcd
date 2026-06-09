@@ -38,11 +38,11 @@ func TestServerOnce(t *testing.T) {
 	}
 }
 
-// TestLoopbackAndHandlers checks the read-side accessors mint non-nil.
-func TestLoopbackAndHandlers(t *testing.T) {
+// TestSelfAndHandlers checks the read-side accessors mint non-nil.
+func TestSelfAndHandlers(t *testing.T) {
 	e := startedNode(t)
-	if e.Loopback() == nil {
-		t.Fatal("nil Loopback")
+	if e.Self() == nil {
+		t.Fatal("nil Self")
 	}
 	if e.GrpcServer() == nil {
 		t.Fatal("nil GrpcServer")

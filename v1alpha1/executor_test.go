@@ -26,7 +26,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli := e.Loopback()
+	cli := e.Self()
 	if _, err := cli.Put(ctx, "k", "v"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -51,5 +51,38 @@ func TestStopIdempotent(t *testing.T) {
 	}
 	if err := e.Stop(); err != nil {
 		t.Fatalf("Stop #2: %v", err)
+	}
+}
+
+// TestJoin brings up a node, joins a second one to it, and reads the replicated
+// key from the joiner — exercising the full learner-add → promote → voting flow.
+func TestJoin(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	e1 := v1alpha1.New()
+	e1.WithDir(t.TempDir()).WithContext(ctx)
+	if err := e1.Start(); err != nil {
+		t.Fatalf("node1 Start: %v", err)
+	}
+	defer e1.Stop()
+
+	if _, err := e1.Voters().Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	e2 := v1alpha1.New()
+	e2.WithDir(t.TempDir()).WithContext(ctx)
+	if err := e2.Join(e1); err != nil {
+		t.Fatalf("node2 Join: %v", err)
+	}
+	defer e2.Stop()
+
+	resp, err := e2.Self().Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("node2 Get: %v", err)
+	}
+	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
+		t.Fatalf("node2 Get = %v, want value %q", resp.Kvs, "v")
 	}
 }

@@ -47,7 +47,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e.Client()
+	cli := e.Voters()
 	cli.Put(ctx, "greeting", "hello world")
 	resp, _ := cli.Get(ctx, "greeting")
 
@@ -83,58 +83,68 @@ For the file-by-file map, see
 func New() Etcd
 
 type Etcd interface {
-    Accessor // read-side handles
+    Server   // server-side handles
+    Client   // clientv3 clients
     Builder  // configuration
     Executor // lifecycle
 }
 
-// Builder — configure; each returns Builder, mutating the node in place.
+// Builder — configure; each returns the node (Etcd), mutating it in place.
 type Builder interface {
-    WithName(name string) Builder                // member name; default "default"
-    WithDir(dir string) Builder                  // data dir; default: a fresh temp dir
-    WithClientListener(l net.Listener) Builder   // client URL from a listener (https if TLS-wrapped)
-    WithPeerListener(l net.Listener) Builder      // peer URL from a listener
-    WithClusterToken(token string) Builder        // initial-cluster token; default "libetcd-cluster"
-    WithLogLevel(level string) Builder            // server log level; default "fatal"
-    WithClientHTTP(srv *http.Server) Builder      // supply the client (v3 API) http.Server
-    WithPeerHTTP(srv *http.Server) Builder        // supply the peer (raft) http.Server
+    WithName(name string) Etcd                // member name; default: a unique generated name
+    WithDir(dir string) Etcd                  // data dir; default: a fresh temp dir
+    WithClientListener(l net.Listener) Etcd   // client URL from a listener (https if TLS-wrapped)
+    WithPeerListener(l net.Listener) Etcd     // peer URL from a listener
+    WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
+    WithLog(level string, w io.Writer) Etcd   // route logs to w at level; silent by default
+    WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
+    WithClientHTTP(srv *http.Server) Etcd     // supply the client (v3 API) http.Server
+    WithPeerHTTP(srv *http.Server) Etcd       // supply the peer (raft) http.Server
 }
 
 // Executor — lifecycle.
 type Executor interface {
-    Start() error // mint + start; auto-binds any unset listener; serves client/peer HTTP
-    Stop() error  // best-effort shutdown
+    Start() error                      // mint + start; auto-binds any unset listener; serves HTTP
+    Stop() error                       // best-effort, idempotent shutdown
+    Join(with Client) error            // join an existing cluster (managed: learner -> promote)
 }
 
-// Accessor — read-side handles, minted lazily and cached.
-type Accessor interface {
-    Server() *etcdserver.EtcdServer     // the minted server (nil on bad config)
-    GrpcServer() *grpc.Server           // v3 gRPC server (election + lock registered)
-    Loopback() *clientv3.Client         // in-process client
-    Client() (*clientv3.Client, error)  // networked client (dials client URLs)
-    ClientHandler() http.Handler        // gRPC (+REST gateway) handler, h2c-wrapped
-    PeerHandler() http.Handler          // raft peer protocol handler
-    ClientHTTP() *http.Server           // client http.Server (provided or default)
-    PeerHTTP() *http.Server             // peer http.Server (provided or default)
-    ClientListener() net.Listener       // listener set via WithClientListener, or nil
-    PeerListener() net.Listener         // listener set via WithPeerListener, or nil
+// Server — server-side handles, minted lazily and cached.
+type Server interface {
+    Server() *etcdserver.EtcdServer  // the minted server (nil on bad config)
+    GrpcServer() *grpc.Server        // v3 gRPC server (election + lock registered)
+    ClientHandler() http.Handler     // gRPC (+REST gateway) handler, h2c-wrapped
+    PeerHandler() http.Handler       // raft peer protocol handler
+    ClientHTTP() *http.Server        // client http.Server (provided or default)
+    PeerHTTP() *http.Server          // peer http.Server (provided or default)
+    ClientListener() net.Listener    // listener set via WithClientListener, or nil
+    PeerListener() net.Listener      // listener set via WithPeerListener, or nil
+}
+
+// Client — clientv3 clients to the cluster.
+type Client interface {
+    Self() *clientv3.Client    // in-process client to this node
+    Leader() *clientv3.Client  // client pinned to the leader
+    Voters() *clientv3.Client  // networked client (dials voting members)
 }
 ```
-
-Single-node only for now; multi-node cluster bootstrap lands in a follow-up.
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example       | Demonstrates                                            |
-| ------------- | ------------------------------------------------------ |
-| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`. |
+| Example       | Demonstrates                                                     |
+| ------------- | --------------------------------------------------------------- |
+| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
+| `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key. |
+| `load-test`   | Grow a cluster under read/write load for 30s; print throughput + latency. |
 
-Run it locally:
+Run one locally:
 
 ```sh
 make run single-node
+make run multi-node
+make run load-test
 ```
 
 ## Testing
