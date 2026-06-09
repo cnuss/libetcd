@@ -17,28 +17,40 @@ import (
 	"google.golang.org/grpc"
 )
 
-// Accessor exposes read-side handles derived from a configured builder: the
-// minted server and the listeners it was given.
-type Accessor interface {
+// Server exposes the server-side handles minted from a configured node: the raw
+// etcdserver, its listeners, HTTP handlers, http.Servers, and the gRPC server.
+type Server interface {
 	// Server mints the etcdserver.EtcdServer from the validated configuration,
 	// exactly once (cached on subsequent calls). Returns nil if the configuration
 	// is invalid or minting fails.
 	Server() *etcdserver.EtcdServer
-	// ClientListener returns the listener set by WithClientListener, or nil.
-	ClientListener() net.Listener
-	// PeerListener returns the listener set by WithPeerListener, or nil.
-	PeerListener() net.Listener
-	// PeerHandler returns an http.Handler serving the peer (raft) protocol for
-	// the minted server, or nil if the server can't be minted.
-	PeerHandler() http.Handler
-	// ClientHandler returns an http.Handler serving the gRPC client (v3) API for
-	// the minted server — mount it on an HTTP/2 listener. Returns nil if the
-	// server can't be minted.
-	ClientHandler() http.Handler
 	// GrpcServer returns the v3 gRPC server (election and lock services
 	// registered) for the minted server, minted at most once. Nil if the server
 	// can't be minted.
 	GrpcServer() *grpc.Server
+	// ClientHandler returns an http.Handler serving the gRPC client (v3) API for
+	// the minted server — mount it on an HTTP/2 listener. Returns nil if the
+	// server can't be minted.
+	ClientHandler() http.Handler
+	// PeerHandler returns an http.Handler serving the peer (raft) protocol for
+	// the minted server, or nil if the server can't be minted.
+	PeerHandler() http.Handler
+	// ClientHTTP returns the http.Server for the client (v3 API) listener,
+	// resolved at most once: the one supplied via WithClientHTTP, or a default
+	// whose Handler is ClientHandler.
+	ClientHTTP() *http.Server
+	// PeerHTTP returns the http.Server for the peer (raft) listener, resolved at
+	// most once: the one supplied via WithPeerHTTP, or a default whose Handler is
+	// PeerHandler.
+	PeerHTTP() *http.Server
+	// ClientListener returns the listener set by WithClientListener, or nil.
+	ClientListener() net.Listener
+	// PeerListener returns the listener set by WithPeerListener, or nil.
+	PeerListener() net.Listener
+}
+
+// Client exposes clientv3.Clients to the cluster from a running node.
+type Client interface {
 	// Self returns an in-process clientv3.Client wired to this node's minted
 	// server, minted at most once. Nil if the server can't be minted.
 	Self() *clientv3.Client
@@ -50,14 +62,6 @@ type Accessor interface {
 	// members (discovered via Self's MemberList; learners excluded), or nil if
 	// the configuration is invalid or the client can't be built.
 	Voters() *clientv3.Client
-	// ClientHTTP returns the http.Server for the client (v3 API) listener,
-	// resolved at most once: the one supplied via WithClientHTTP, or a default
-	// whose Handler is ClientHandler.
-	ClientHTTP() *http.Server
-	// PeerHTTP returns the http.Server for the peer (raft) listener, resolved at
-	// most once: the one supplied via WithPeerHTTP, or a default whose Handler is
-	// PeerHandler.
-	PeerHTTP() *http.Server
 }
 
 // Builder configures an embedded etcd node. Configure it with the With* methods
@@ -66,13 +70,12 @@ type Accessor interface {
 //
 // Each With* mutates an underlying embed.Config, revalidates it, and regenerates
 // a derived config.ServerConfig. The first validation failure is latched and
-// surfaced by the accessors (e.g. Server returns nil) and by Start.
+// surfaced by the Server/Client accessors (e.g. Server returns nil) and by Start.
 //
 // Defaults (no method calls): a temp data dir, client URL
 // http://localhost:2379, peer URL http://localhost:2380, a new cluster, and log
 // level "fatal".
 type Builder interface {
-	Accessor
 	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) Etcd
 	// WithDir sets the data directory. Default: a fresh temp directory.
@@ -118,7 +121,8 @@ type Executor interface {
 }
 
 type Etcd interface {
-	Accessor
+	Server
+	Client
 	Builder
 	Executor
 }

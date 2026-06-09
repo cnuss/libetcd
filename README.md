@@ -83,7 +83,8 @@ For the file-by-file map, see
 func New() Etcd
 
 type Etcd interface {
-    Accessor // read-side handles
+    Server   // server-side handles
+    Client   // clientv3 clients
     Builder  // configuration
     Executor // lifecycle
 }
@@ -109,19 +110,23 @@ type Executor interface {
     Join(with *clientv3.Client) error  // join an existing cluster (managed: learner -> promote)
 }
 
-// Accessor — read-side handles, minted lazily and cached.
-type Accessor interface {
+// Server — server-side handles, minted lazily and cached.
+type Server interface {
     Server() *etcdserver.EtcdServer  // the minted server (nil on bad config)
     GrpcServer() *grpc.Server        // v3 gRPC server (election + lock registered)
-    Self() *clientv3.Client          // in-process client to this node
-    Leader() *clientv3.Client        // client pinned to the leader
-    Voters() *clientv3.Client        // networked client (dials voting members)
     ClientHandler() http.Handler     // gRPC (+REST gateway) handler, h2c-wrapped
     PeerHandler() http.Handler       // raft peer protocol handler
     ClientHTTP() *http.Server        // client http.Server (provided or default)
     PeerHTTP() *http.Server          // peer http.Server (provided or default)
     ClientListener() net.Listener    // listener set via WithClientListener, or nil
     PeerListener() net.Listener      // listener set via WithPeerListener, or nil
+}
+
+// Client — clientv3 clients to the cluster.
+type Client interface {
+    Self() *clientv3.Client    // in-process client to this node
+    Leader() *clientv3.Client  // client pinned to the leader
+    Voters() *clientv3.Client  // networked client (dials voting members)
 }
 ```
 

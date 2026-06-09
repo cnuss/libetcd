@@ -13,7 +13,7 @@
 //
 //   - libetcd (this package) — thin façade exposing New. Stable surface for
 //     application code.
-//   - github.com/cnuss/libetcd/v1 — the stable Accessor, Builder, Executor, and
+//   - github.com/cnuss/libetcd/v1 — the stable Server, Client, Builder, Executor, and
 //     Etcd interfaces. Application code that wants to declare types against the
 //     contract imports this.
 //   - github.com/cnuss/libetcd/v1alpha1 — the current implementation. Internals

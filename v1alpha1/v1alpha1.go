@@ -5,7 +5,7 @@
 //
 // The implementation is split by interface: v1alpha1.go (the EtcdImpl type and
 // New), builder.go (the With* setters and the validate/derive machinery),
-// accessor.go (the read-side Accessor handles), and executor.go (the Executor
+// accessor.go (Server + Client handles), and executor.go (the Executor
 // lifecycle: Start/Stop).
 package v1alpha1
 
@@ -26,7 +26,7 @@ import (
 	v1 "github.com/cnuss/libetcd/v1"
 )
 
-// EtcdImpl implements the full Etcd surface (Accessor + Builder + Executor).
+// EtcdImpl implements the full Etcd surface (Server + Client + Builder + Executor).
 var _ v1.Etcd = (*EtcdImpl)(nil)
 
 // EtcdImpl is the default implementation. It holds a live embed.Config that each
