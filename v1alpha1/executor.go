@@ -100,7 +100,7 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 	// Target the leader directly for the membership changes. clientv3 would
 	// forward them anyway, but a leader-pinned client avoids the extra hop.
 	mc := with
-	if lc := b.leaderClient(ctx, with, ml); lc != nil {
+	if lc := b.leaderClientFrom(ctx, with, ml); lc != nil {
 		mc = lc
 		defer mc.Close()
 	}
@@ -132,15 +132,16 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 	return b.promote(ctx, mc, id)
 }
 
-// leaderClient finds the cluster leader (via Status on with) and returns a new
-// client pinned to the leader's client URLs, or nil if it can't be determined.
-// The caller closes the returned client.
-func (b *EtcdImpl) leaderClient(ctx context.Context, with *clientv3.Client, ml *clientv3.MemberListResponse) *clientv3.Client {
-	eps := with.Endpoints()
-	if len(eps) == 0 {
-		return nil
+// leaderClientFrom finds the cluster leader (via Status on src) and returns a
+// new client pinned to the leader's client URLs, or nil if it can't be
+// determined. src may be a networked or a Self (loopback) client — the loopback
+// ignores the endpoint arg. The caller closes the returned client.
+func (b *EtcdImpl) leaderClientFrom(ctx context.Context, src *clientv3.Client, ml *clientv3.MemberListResponse) *clientv3.Client {
+	ep := ""
+	if eps := src.Endpoints(); len(eps) > 0 {
+		ep = eps[0]
 	}
-	st, err := with.Status(ctx, eps[0])
+	st, err := src.Status(ctx, ep)
 	if err != nil {
 		return nil
 	}

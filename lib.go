@@ -7,7 +7,7 @@
 //	e.WithDir("/tmp/data").WithClientListener(lc)
 //	if err := e.Start(); err != nil { /* ... */ }
 //	defer e.Stop()
-//	e.Loopback().Put(ctx, "k", "v")
+//	e.Self().Put(ctx, "k", "v")
 //
 // The package is split into three pieces:
 //

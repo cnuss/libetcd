@@ -47,7 +47,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e.Client()
+	cli := e.Voters()
 	cli.Put(ctx, "greeting", "hello world")
 	resp, _ := cli.Get(ctx, "greeting")
 
@@ -113,8 +113,9 @@ type Executor interface {
 type Accessor interface {
     Server() *etcdserver.EtcdServer  // the minted server (nil on bad config)
     GrpcServer() *grpc.Server        // v3 gRPC server (election + lock registered)
-    Loopback() *clientv3.Client      // in-process client
-    Client() *clientv3.Client        // networked client (dials voting members)
+    Self() *clientv3.Client          // in-process client to this node
+    Leader() *clientv3.Client        // client pinned to the leader
+    Voters() *clientv3.Client        // networked client (dials voting members)
     ClientHandler() http.Handler     // gRPC (+REST gateway) handler, h2c-wrapped
     PeerHandler() http.Handler       // raft peer protocol handler
     ClientHTTP() *http.Server        // client http.Server (provided or default)

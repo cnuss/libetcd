@@ -43,7 +43,7 @@ func NewLoad(ctx context.Context, interval time.Duration) *Load {
 // WithEtcd registers e as a load target and kicks off load against it. The first
 // call also starts the periodic reporter. Returns the Load for chaining.
 func (l *Load) WithEtcd(e v1.Etcd) *Load {
-	l.cli.Store(e.Client())
+	l.cli.Store(e.Voters())
 
 	l.mu.Lock()
 	l.targets = append(l.targets, e)
@@ -153,7 +153,7 @@ func (l *Load) snapshotTargets() []v1.Etcd {
 // node's loopback client.
 func (l *Load) memberNames() map[uint64]string {
 	for _, e := range l.snapshotTargets() {
-		lb := e.Loopback()
+		lb := e.Self()
 		if lb == nil {
 			continue
 		}
@@ -174,7 +174,7 @@ func (l *Load) memberNames() map[uint64]string {
 
 // statusOf returns e's endpoint status via its in-process loopback client.
 func (l *Load) statusOf(e v1.Etcd) *clientv3.StatusResponse {
-	lb := e.Loopback()
+	lb := e.Self()
 	if lb == nil {
 		return nil
 	}

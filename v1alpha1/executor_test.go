@@ -26,7 +26,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cli := e.Loopback()
+	cli := e.Self()
 	if _, err := cli.Put(ctx, "k", "v"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -67,18 +67,18 @@ func TestJoin(t *testing.T) {
 	}
 	defer e1.Stop()
 
-	if _, err := e1.Client().Put(ctx, "k", "v"); err != nil {
+	if _, err := e1.Voters().Put(ctx, "k", "v"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
 	e2 := v1alpha1.New()
 	e2.WithDir(t.TempDir()).WithContext(ctx)
-	if err := e2.Join(e1.Client()); err != nil {
+	if err := e2.Join(e1.Voters()); err != nil {
 		t.Fatalf("node2 Join: %v", err)
 	}
 	defer e2.Stop()
 
-	resp, err := e2.Loopback().Get(ctx, "k")
+	resp, err := e2.Self().Get(ctx, "k")
 	if err != nil {
 		t.Fatalf("node2 Get: %v", err)
 	}

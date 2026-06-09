@@ -22,7 +22,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e1.Client()
+	cli := e1.Voters()
 	if _, err := cli.Put(ctx, "greeting", "hello world"); err != nil {
 		log.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func main() {
 
 	printMembers(ctx, "after join", cli)
 
-	resp, err := e2.Loopback().Get(ctx, "greeting")
+	resp, err := e2.Self().Get(ctx, "greeting")
 	if err != nil {
 		log.Fatal(err)
 	}

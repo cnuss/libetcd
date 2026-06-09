@@ -39,13 +39,17 @@ type Accessor interface {
 	// registered) for the minted server, minted at most once. Nil if the server
 	// can't be minted.
 	GrpcServer() *grpc.Server
-	// Loopback returns an in-process clientv3.Client wired to the minted server,
-	// minted at most once. Nil if the server can't be minted.
-	Loopback() *clientv3.Client
-	// Client returns a networked clientv3.Client dialing the cluster's voting
-	// members (discovered via the loopback MemberList; learners excluded), or
-	// nil if the configuration is invalid or the client can't be built.
-	Client() *clientv3.Client
+	// Self returns an in-process clientv3.Client wired to this node's minted
+	// server, minted at most once. Nil if the server can't be minted.
+	Self() *clientv3.Client
+	// Leader returns a clientv3.Client pinned to the cluster leader's client
+	// URLs (discovered via Self), or nil if it can't be determined. The caller
+	// closes it.
+	Leader() *clientv3.Client
+	// Voters returns a networked clientv3.Client dialing the cluster's voting
+	// members (discovered via Self's MemberList; learners excluded), or nil if
+	// the configuration is invalid or the client can't be built.
+	Voters() *clientv3.Client
 	// ClientHTTP returns the http.Server for the client (v3 API) listener,
 	// resolved at most once: the one supplied via WithClientHTTP, or a default
 	// whose Handler is ClientHandler.
