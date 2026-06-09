@@ -73,7 +73,7 @@ func TestJoin(t *testing.T) {
 
 	e2 := v1alpha1.New()
 	e2.WithDir(t.TempDir()).WithContext(ctx)
-	if err := e2.Join(e1.Voters()); err != nil {
+	if err := e2.Join(e1); err != nil {
 		t.Fatalf("node2 Join: %v", err)
 	}
 	defer e2.Stop()

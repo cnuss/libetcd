@@ -31,7 +31,7 @@ func main() {
 
 	// Node 2: join the cluster via node 1's client — fully managed.
 	e2 := libetcd.New().WithContext(ctx)
-	if err := e2.Join(cli); err != nil {
+	if err := e2.Join(e1); err != nil {
 		log.Fatal(err)
 	}
 

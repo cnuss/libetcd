@@ -34,7 +34,7 @@ func main() {
 			return // cancelling ctx gracefully stops every node
 		case <-ticker.C:
 			n := libetcd.New().WithContext(ctx)
-			if err := n.Join(e1.Voters()); err != nil {
+			if err := n.Join(e1); err != nil {
 				if ctx.Err() != nil {
 					return // test over
 				}

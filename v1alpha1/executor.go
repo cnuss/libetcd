@@ -10,6 +10,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
+
+	v1 "github.com/cnuss/libetcd/v1"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -54,7 +56,7 @@ func (b *EtcdImpl) Start() error {
 // learner (non-voting, so it doesn't disturb quorum while catching up), starts,
 // and promotes itself to a voting member once caught up. It blocks until the
 // node is a voting member, or the bounding context elapses.
-func (b *EtcdImpl) Join(with *clientv3.Client) error {
+func (b *EtcdImpl) Join(with v1.Client) error {
 	if with == nil {
 		return errors.New("join: nil client")
 	}
@@ -79,8 +81,19 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 		defer cancel()
 	}
 
+	// A leader-pinned client to the existing cluster for the membership changes
+	// (clientv3 would forward anyway, but pinning avoids the extra hop).
+	mc := with.Leader()
+	if mc == nil {
+		mc = with.Voters()
+	}
+	if mc == nil {
+		return errors.New("join: no usable client from peer")
+	}
+	defer mc.Close()
+
 	// Existing members, for this node's initial-cluster string.
-	ml, err := with.MemberList(ctx)
+	ml, err := mc.MemberList(ctx)
 	if err != nil {
 		return fmt.Errorf("join: member list: %w", err)
 	}
@@ -95,14 +108,6 @@ func (b *EtcdImpl) Join(with *clientv3.Client) error {
 		for _, pu := range m.PeerURLs {
 			parts = append(parts, m.Name+"="+pu)
 		}
-	}
-
-	// Target the leader directly for the membership changes. clientv3 would
-	// forward them anyway, but a leader-pinned client avoids the extra hop.
-	mc := with
-	if lc := b.leaderClientFrom(ctx, with, ml); lc != nil {
-		mc = lc
-		defer mc.Close()
 	}
 
 	// Add self as a learner.

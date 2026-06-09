@@ -107,7 +107,7 @@ type Builder interface {
 type Executor interface {
     Start() error                      // mint + start; auto-binds any unset listener; serves HTTP
     Stop() error                       // best-effort, idempotent shutdown
-    Join(with *clientv3.Client) error  // join an existing cluster (managed: learner -> promote)
+    Join(with Client) error            // join an existing cluster (managed: learner -> promote)
 }
 
 // Server — server-side handles, minted lazily and cached.

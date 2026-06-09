@@ -113,11 +113,11 @@ type Executor interface {
 	// Stop shuts the node down, best-effort and idempotent.
 	Stop() error
 	// Join brings the node up as a member of an existing cluster, fully managed
-	// on the joiner side: given a client to any current member, it adds itself as
+	// on the joiner side: given any current member (a Client), it adds itself as
 	// a learner, starts, catches up, and promotes itself to a voting member. It
 	// blocks until the node is a voting member (so reads work immediately) or the
 	// WithContext context / an internal deadline elapses.
-	Join(with *clientv3.Client) error
+	Join(with Client) error
 }
 
 type Etcd interface {
