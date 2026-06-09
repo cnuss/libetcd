@@ -74,7 +74,8 @@ type Client interface {
 //
 // Defaults (no method calls): a temp data dir, client URL
 // http://localhost:2379, peer URL http://localhost:2380, a new cluster, and log
-// level "fatal".
+// level "fatal". New also applies opinionated tuning for embedded use (longer
+// raft tick/election, generous snapshot retention, memory mlock).
 type Builder interface {
 	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) Etcd
@@ -89,16 +90,6 @@ type Builder interface {
 	WithPeerListener(l net.Listener) Etcd
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
 	WithClusterToken(token string) Etcd
-	// WithSnapshotCatchUpEntries sets how many raft log entries are retained
-	// after a snapshot for slow/joining followers (default 5000). Raise it so a
-	// new member catches up by log replay instead of a snapshot transfer —
-	// useful for short-lived clusters, and it avoids an embedded snapshot-apply
-	// failure on Windows (the backend db can't be renamed-over while mmap'd).
-	WithSnapshotCatchUpEntries(n uint64) Etcd
-	// WithStrict toggles etcd's strict reconfiguration check, which rejects
-	// membership changes that would risk quorum. Off by default (eases rapid
-	// joins); set true for production safety.
-	WithStrict(strict bool) Etcd
 	// WithLogLevel sets the server log level (e.g. "error", "warn", "info").
 	WithLogLevel(level string) Etcd
 	// WithContext ties the node's lifetime to ctx: when ctx is cancelled, the

@@ -97,8 +97,14 @@ func New() *EtcdImpl {
 	cfg.Name = defaultName()
 
 	// Opinionated defaults
+	cfg.InitialElectionTickAdvance = false
+	cfg.ElectionMs = 10000
 	cfg.LogLevel = "fatal"
+	cfg.MemoryMlock = true
 	cfg.MaxLearners = math.MaxInt
+	cfg.SnapshotCatchUpEntries = 100000
+	cfg.SnapshotCount = 100000
+	cfg.TickMs = 1000
 
 	b := &EtcdImpl{
 		cfg:    cfg,

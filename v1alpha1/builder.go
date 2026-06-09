@@ -56,19 +56,6 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 	return b
 }
 
-// WithSnapshotCatchUpEntries sets how many raft log entries are retained after a
-// snapshot for slow/joining followers to catch up by log replay.
-func (b *EtcdImpl) WithSnapshotCatchUpEntries(n uint64) v1.Etcd {
-	b.mutate(func() error { b.cfg.SnapshotCatchUpEntries = n; return nil })
-	return b
-}
-
-// WithStrict toggles etcd's strict reconfiguration check.
-func (b *EtcdImpl) WithStrict(strict bool) v1.Etcd {
-	b.mutate(func() error { b.cfg.StrictReconfigCheck = strict; return nil })
-	return b
-}
-
 // WithLogLevel sets the server log level.
 func (b *EtcdImpl) WithLogLevel(level string) v1.Etcd {
 	b.mutate(func() error { b.cfg.LogLevel = level; return nil })

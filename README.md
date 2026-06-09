@@ -96,8 +96,6 @@ type Builder interface {
     WithClientListener(l net.Listener) Etcd   // client URL from a listener (https if TLS-wrapped)
     WithPeerListener(l net.Listener) Etcd     // peer URL from a listener
     WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
-    WithSnapshotCatchUpEntries(n uint64) Etcd // retained log entries for catch-up; default 5000
-    WithStrict(strict bool) Etcd              // strict reconfig check; default off
     WithLogLevel(level string) Etcd           // server log level; default "fatal"
     WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
     WithClientHTTP(srv *http.Server) Etcd     // supply the client (v3 API) http.Server
@@ -139,7 +137,7 @@ Self-contained programs in [`./examples`](./examples):
 | ------------- | --------------------------------------------------------------- |
 | `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
 | `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key. |
-| `load-test`   | Drive read/write load through a join for 15s; print throughput + latency. |
+| `load-test`   | Grow a cluster under read/write load for 30s; print throughput + latency. |
 
 Run one locally:
 
