@@ -48,13 +48,13 @@ type EtcdImpl struct {
 	userCtx context.Context
 
 	// clientListener and peerListener retain the listeners passed to
-	// WithClientListener / WithPeerListener (nil until set), exposed via the
+	// WithClientServing / WithPeerServing (nil until set), exposed via the
 	// ClientListener / PeerListener accessors.
 	clientListener net.Listener
 	peerListener   net.Listener
 
 	// clientHTTP/peerHTTP are the http.Servers returned by ClientHTTP/PeerHTTP:
-	// the ones supplied via WithClientHTTP/WithPeerHTTP, or defaults created
+	// the ones supplied via WithClientServing/WithPeerServing, or defaults created
 	// (once each) if none were provided.
 	clientHTTP     *http.Server
 	clientHTTPOnce sync.Once

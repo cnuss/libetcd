@@ -16,7 +16,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 	lp, _ := net.Listen("tcp", "127.0.0.1:0")
 
 	e := v1alpha1.New()
-	e.WithDir(t.TempDir()).WithClientListener(lc).WithPeerListener(lp)
+	e.WithDir(t.TempDir()).WithClientServing(lc, nil).WithPeerServing(lp, nil)
 
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)

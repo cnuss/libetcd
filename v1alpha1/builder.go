@@ -29,27 +29,28 @@ func (b *EtcdImpl) WithDir(dir string) v1.Etcd {
 	return b
 }
 
-// WithClientListener sets the client URL from a net.Listener's address and
-// retains the listener (see ClientListener).
-func (b *EtcdImpl) WithClientListener(l net.Listener) v1.Etcd {
+// WithClientServing configures how the client (v3 API) is served, unifying the
+// listener and the http.Server in one call (replacing the former
+// WithClientListener + WithClientHTTP pair).
+//
+//   - lis, when non-nil, sets the client listen+advertise URL from its address
+//     and is retained (see ClientListener). When nil, Start auto-binds a free
+//     loopback listener (see ensureListeners).
+//   - srv, when non-nil, supplies the client http.Server. If it carries its own
+//     Handler it is served as-is, replacing the client API; unlike the peer side
+//     the client handler is content-type-multiplexed gRPC and can't be path-muxed
+//     (see ClientHTTP), so a caller wanting both composes ClientHandler itself.
+func (b *EtcdImpl) WithClientServing(lis net.Listener, srv *http.Server) v1.Etcd {
 	b.mutate(func() error {
-		u := listenerURL(l)
-		b.cfg.ListenClientUrls = []url.URL{u}
-		b.cfg.AdvertiseClientUrls = []url.URL{u}
-		b.clientListener = l
-		return nil
-	})
-	return b
-}
-
-// WithPeerListener sets the peer URL from a net.Listener's address and retains
-// the listener (see PeerListener).
-func (b *EtcdImpl) WithPeerListener(l net.Listener) v1.Etcd {
-	b.mutate(func() error {
-		u := listenerURL(l)
-		b.cfg.ListenPeerUrls = []url.URL{u}
-		b.cfg.AdvertisePeerUrls = []url.URL{u}
-		b.peerListener = l
+		if lis != nil {
+			u := listenerURL(lis)
+			b.cfg.ListenClientUrls = []url.URL{u}
+			b.cfg.AdvertiseClientUrls = []url.URL{u}
+			b.clientListener = lis
+		}
+		if srv != nil {
+			b.clientHTTP = srv
+		}
 		return nil
 	})
 	return b
@@ -104,15 +105,33 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 	return b
 }
 
-// WithClientHTTP supplies the http.Server for the client (v3 API) listener.
-func (b *EtcdImpl) WithClientHTTP(srv *http.Server) v1.Etcd {
-	b.mutate(func() error { b.clientHTTP = srv; return nil })
-	return b
-}
-
-// WithPeerHTTP supplies the http.Server for the peer (raft) listener.
-func (b *EtcdImpl) WithPeerHTTP(srv *http.Server) v1.Etcd {
-	b.mutate(func() error { b.peerHTTP = srv; return nil })
+// WithPeerServing configures how the peer (raft) protocol is served, unifying
+// the listener and the http.Server in one call (replacing the former
+// WithPeerListener + WithPeerHTTP pair).
+//
+//   - lis, when non-nil, sets the peer listen+advertise URL from its address and
+//     is retained (see PeerListener). When nil, Start auto-binds a free loopback
+//     listener (see ensureListeners).
+//   - srv, when non-nil, supplies the peer http.Server. If it carries its own
+//     Handler, the raft paths are muxed onto PeerHandler at serve time so raft
+//     keeps working alongside the supplied application routes; see PeerHTTP.
+//
+// The handler merge is deferred to PeerHTTP (resolved during Start) rather than
+// done here, because building the peer handler mints the server — doing that at
+// builder time would freeze the config before Start binds the real listeners.
+func (b *EtcdImpl) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd {
+	b.mutate(func() error {
+		if lis != nil {
+			u := listenerURL(lis)
+			b.cfg.ListenPeerUrls = []url.URL{u}
+			b.cfg.AdvertisePeerUrls = []url.URL{u}
+			b.peerListener = lis
+		}
+		if srv != nil {
+			b.peerHTTP = srv
+		}
+		return nil
+	})
 	return b
 }
 
