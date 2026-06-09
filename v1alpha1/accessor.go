@@ -81,11 +81,38 @@ func (b *EtcdImpl) Leader() *clientv3.Client {
 	}
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
+
 	ml, err := self.MemberList(ctx)
 	if err != nil {
 		return nil
 	}
-	return b.leaderClientFrom(ctx, self, ml)
+	st, err := self.Status(ctx, "") // loopback ignores the endpoint arg
+	if err != nil {
+		return nil
+	}
+	var leader []string
+	for _, m := range ml.Members {
+		if m.ID == st.Leader {
+			leader = m.ClientURLs
+			break
+		}
+	}
+	if len(leader) == 0 {
+		return nil
+	}
+
+	b.mu.Lock()
+	lg := b.cfg.GetLogger()
+	b.mu.Unlock()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   leader,
+		DialTimeout: 5 * time.Second,
+		Logger:      lg,
+	})
+	if err != nil {
+		return nil
+	}
+	return cli
 }
 
 // Voters returns a networked clientv3.Client that dials the cluster's voting

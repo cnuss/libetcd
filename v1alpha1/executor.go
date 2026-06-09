@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 
 	v1 "github.com/cnuss/libetcd/v1"
@@ -110,12 +109,25 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		}
 	}
 
-	// Add self as a learner.
-	add, err := mc.MemberAddAsLearner(ctx, []string{selfPeer})
-	if err != nil {
-		return fmt.Errorf("join: member add: %w", err)
+	// Add self as a learner, retrying transient errors (e.g. "unhealthy cluster"
+	// during a concurrent reconfig, or a leader change) until it succeeds or ctx
+	// elapses.
+	var id uint64
+	addTicker := time.NewTicker(500 * time.Millisecond)
+	for {
+		add, addErr := mc.MemberAddAsLearner(ctx, []string{selfPeer})
+		if addErr == nil {
+			id = add.Member.ID
+			break
+		}
+		select {
+		case <-ctx.Done():
+			addTicker.Stop()
+			return fmt.Errorf("join: member add: %w", ctx.Err())
+		case <-addTicker.C:
+		}
 	}
-	id := add.Member.ID
+	addTicker.Stop()
 
 	parts = append(parts, name+"="+selfPeer)
 	initialCluster := strings.Join(parts, ",")
@@ -133,61 +145,41 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return fmt.Errorf("join: start: %w", err)
 	}
 
-	// Promote learner -> voting once it's caught up (blocks until done).
-	return b.promote(ctx, mc, id)
-}
-
-// leaderClientFrom finds the cluster leader (via Status on src) and returns a
-// new client pinned to the leader's client URLs, or nil if it can't be
-// determined. src may be a networked or a Self (loopback) client — the loopback
-// ignores the endpoint arg. The caller closes the returned client.
-func (b *EtcdImpl) leaderClientFrom(ctx context.Context, src *clientv3.Client, ml *clientv3.MemberListResponse) *clientv3.Client {
-	ep := ""
-	if eps := src.Endpoints(); len(eps) > 0 {
-		ep = eps[0]
+	// Wait until this learner's raft index is within 90% of the leader's before
+	// attempting promotion, so etcd doesn't reject it for being out of sync.
+	self := b.Self()
+	leaderEP := ""
+	if eps := mc.Endpoints(); len(eps) > 0 {
+		leaderEP = eps[0]
 	}
-	st, err := src.Status(ctx, ep)
-	if err != nil {
-		return nil
-	}
-	var leader []string
-	for _, m := range ml.Members {
-		if m.ID == st.Leader {
-			leader = m.ClientURLs
+	syncTicker := time.NewTicker(500 * time.Millisecond)
+	for self != nil {
+		leaderSt, lErr := mc.Status(ctx, leaderEP)
+		selfSt, sErr := self.Status(ctx, "") // loopback ignores the endpoint arg
+		if lErr == nil && sErr == nil && selfSt.RaftIndex*100 >= leaderSt.RaftIndex*90 {
 			break
 		}
+		select {
+		case <-ctx.Done():
+			syncTicker.Stop()
+			return fmt.Errorf("join: wait for sync: %w", ctx.Err())
+		case <-syncTicker.C:
+		}
 	}
-	if len(leader) == 0 {
-		return nil
-	}
+	syncTicker.Stop()
 
-	b.mu.Lock()
-	lg := b.cfg.GetLogger()
-	b.mu.Unlock()
-	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   leader,
-		DialTimeout: 5 * time.Second,
-		Logger:      lg,
-	})
-	if err != nil {
-		return nil
-	}
-	return cli
-}
-
-// promote retries MemberPromote until it succeeds (etcd rejects promotion until
-// the learner is in sync with the leader) or ctx elapses.
-func (b *EtcdImpl) promote(ctx context.Context, with *clientv3.Client, id uint64) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	// Promote learner -> voting. With the sync wait above this usually succeeds
+	// first try, but retry until it does or ctx elapses. Blocks until voting.
+	promoteTicker := time.NewTicker(500 * time.Millisecond)
+	defer promoteTicker.Stop()
 	for {
-		if _, err := with.MemberPromote(ctx, id); err == nil {
+		if _, err := mc.MemberPromote(ctx, id); err == nil {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("join: promote member %x: %w", id, ctx.Err())
-		case <-ticker.C:
+		case <-promoteTicker.C:
 		}
 	}
 }
