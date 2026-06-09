@@ -28,12 +28,15 @@ func (b *EtcdImpl) Start() error {
 	}
 	b.startOnce.Do(func() {
 		srv.Start()
-		b.started.Store(true)
+		b.started.Store(true) // run loop active; Stop must HardStop from here
 
 		b.mu.Lock()
 		cl, pl, uctx := b.clientListener, b.peerListener, b.userCtx
 		b.mu.Unlock()
 
+		// Serve the peer + client listeners *before* waiting for ready: a joining
+		// member needs its peer server up to receive raft and catch up, or
+		// ReadyNotify never fires.
 		if pl != nil {
 			ph := b.PeerHTTP()
 			go func() { _ = ph.Serve(pl) }()
@@ -42,6 +45,18 @@ func (b *EtcdImpl) Start() error {
 			ch := b.ClientHTTP()
 			go func() { _ = ch.Serve(cl) }()
 		}
+
+		// Block until the node is ready to serve, bounded by the caller's
+		// context (WithContext) so it can't hang forever.
+		waitCtx := b.ctx
+		if uctx != nil {
+			waitCtx = uctx
+		}
+		select {
+		case <-srv.ReadyNotify():
+		case <-waitCtx.Done():
+		}
+
 		// Graceful shutdown when the caller's context (WithContext) is cancelled.
 		if uctx != nil {
 			context.AfterFunc(uctx, func() { _ = b.Stop() })
@@ -110,24 +125,18 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 	}
 
 	// Add self as a learner, retrying transient errors (e.g. "unhealthy cluster"
-	// during a concurrent reconfig, or a leader change) until it succeeds or ctx
-	// elapses.
+	// during a concurrent reconfig, or a leader change) until it succeeds.
 	var id uint64
-	addTicker := time.NewTicker(500 * time.Millisecond)
-	for {
-		add, addErr := mc.MemberAddAsLearner(ctx, []string{selfPeer})
-		if addErr == nil {
-			id = add.Member.ID
-			break
+	if err := retry(ctx, func() bool {
+		add, err := mc.MemberAddAsLearner(ctx, []string{selfPeer})
+		if err != nil {
+			return false
 		}
-		select {
-		case <-ctx.Done():
-			addTicker.Stop()
-			return fmt.Errorf("join: member add: %w", ctx.Err())
-		case <-addTicker.C:
-		}
+		id = add.Member.ID
+		return true
+	}); err != nil {
+		return fmt.Errorf("join: add member as learner: %w", err)
 	}
-	addTicker.Stop()
 
 	parts = append(parts, name+"="+selfPeer)
 	initialCluster := strings.Join(parts, ",")
@@ -145,44 +154,47 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		return fmt.Errorf("join: start: %w", err)
 	}
 
-	// Wait until this learner is in sync with the leader before attempting
-	// promotion (same raft term, and index within 90%), so etcd doesn't reject
-	// it for being out of sync.
+	// Promote learner -> voting once it's caught up: each tick, if this node is
+	// in sync with the leader (same raft term, index within 90%), attempt the
+	// promotion; etcd also rejects promotion until the learner is in sync, so
+	// retrying covers both. Blocks until voting.
 	self := b.Self()
 	leaderEP := ""
 	if eps := mc.Endpoints(); len(eps) > 0 {
 		leaderEP = eps[0]
 	}
-	syncTicker := time.NewTicker(500 * time.Millisecond)
-	for self != nil {
+	if err := retry(ctx, func() bool {
+		if self == nil {
+			return false
+		}
 		leaderSt, lErr := mc.Status(ctx, leaderEP)
 		selfSt, sErr := self.Status(ctx, "") // loopback ignores the endpoint arg
-		if lErr == nil && sErr == nil &&
-			selfSt.RaftTerm == leaderSt.RaftTerm &&
-			selfSt.RaftIndex*100 >= leaderSt.RaftIndex*90 {
-			break
+		if lErr != nil || sErr != nil ||
+			selfSt.RaftTerm != leaderSt.RaftTerm ||
+			selfSt.RaftIndex*100 < leaderSt.RaftIndex*90 {
+			return false
 		}
-		select {
-		case <-ctx.Done():
-			syncTicker.Stop()
-			return fmt.Errorf("join: wait for sync: %w", ctx.Err())
-		case <-syncTicker.C:
-		}
+		_, err := mc.MemberPromote(ctx, id)
+		return err == nil
+	}); err != nil {
+		return fmt.Errorf("join: promote member %x: %w", id, err)
 	}
-	syncTicker.Stop()
+	return nil
+}
 
-	// Promote learner -> voting. With the sync wait above this usually succeeds
-	// first try, but retry until it does or ctx elapses. Blocks until voting.
-	promoteTicker := time.NewTicker(500 * time.Millisecond)
-	defer promoteTicker.Stop()
+// retry calls fn every 500ms until it returns true, or ctx is done (whose error
+// it then returns).
+func retry(ctx context.Context, fn func() bool) error {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
 	for {
-		if _, err := mc.MemberPromote(ctx, id); err == nil {
+		if fn() {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("join: promote member %x: %w", id, ctx.Err())
-		case <-promoteTicker.C:
+			return ctx.Err()
+		case <-t.C:
 		}
 	}
 }
