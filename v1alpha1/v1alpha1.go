@@ -5,8 +5,8 @@
 //
 // The implementation is split by interface: v1alpha1.go (the EtcdImpl type and
 // New), builder.go (the With* setters and the validate/derive machinery),
-// accessor.go (Server + Client handles), and executor.go (the Executor
-// lifecycle: Start/Stop).
+// server.go (Server handles), client.go (Client handles), and executor.go (the
+// Executor lifecycle: Start/Stop).
 package v1alpha1
 
 import (
