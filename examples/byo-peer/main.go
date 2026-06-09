@@ -6,8 +6,6 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -20,44 +18,28 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // cancelling the context gracefully stops the node
 
-	// One listener carries both raft and the application's routes.
-	peerListener, err := net.Listen("tcp", "127.0.0.1:0")
+	node1 := libetcd.New().WithContext(ctx).WithPeerServing(listener(), nil)
+	if err := node1.Start(); err != nil {
+		log.Fatal(err)
+	}
+
+	cli := node1.Voters()
+	cli.Put(ctx, "now", time.Now().String())
+
+	node2 := libetcd.From(node1.Peers()).WithContext(ctx)
+	if err := node2.Join(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func listener() net.Listener {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		log.Fatal(err)
 	}
-	peerAddr := peerListener.Addr().String()
+	return listener
+}
 
-	// The caller's server: any non-raft path is handled here.
-	peerHTTP := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, "hello from app")
-		}),
-	}
-
-	e := libetcd.New().WithContext(ctx).WithPeerServing(peerListener, peerHTTP)
-	if err := e.Start(); err != nil {
-		log.Fatal(err)
-	}
-
-	// etcd works: round-trip a key through the in-process client.
-	cli := e.Voters()
-	if _, err := cli.Put(ctx, "greeting", "hello world"); err != nil {
-		log.Fatal(err)
-	}
-	resp, err := cli.Get(ctx, "greeting")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// The application route works on the same port the peer listener owns.
-	httpCli := &http.Client{Timeout: 5 * time.Second}
-	r, err := httpCli.Get("http://" + peerAddr + "/app")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer r.Body.Close()
-	body, _ := io.ReadAll(r.Body)
-
-	fmt.Printf("etcd: %s | app: %s\n", resp.Kvs[0].Value, body)
-	// Output: etcd: hello world | app: hello from app
+func server(handler http.Handler) *http.Server {
+	return &http.Server{Handler: handler}
 }

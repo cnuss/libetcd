@@ -3,9 +3,10 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
-	"go.etcd.io/etcd/client/pkg/v3/types"
+	v1 "github.com/cnuss/libetcd/v1"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 )
@@ -123,30 +124,28 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 // one directly. Learners are included; a member not yet reporting a name (e.g. a
 // just-added learner) is keyed by its ID in hex. Returns nil if the server can't
 // be minted or the member list is unavailable.
-func (b *EtcdImpl) Peers() types.URLsMap {
+func (b *EtcdImpl) Peers() v1.Peers {
 	self := b.Self()
 	if self == nil {
-		return nil
+		return v1.Peers{}
 	}
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
 
 	ml, err := self.MemberList(ctx)
 	if err != nil {
-		return nil
+		return v1.Peers{}
 	}
 
-	peers := types.URLsMap{}
+	peers := v1.Peers{}
 	for _, m := range ml.Members {
-		name := m.Name
-		if name == "" {
-			name = fmt.Sprintf("%x", m.ID)
+		for _, u := range m.PeerURLs {
+			parsed, err := url.Parse(u)
+			if err != nil {
+				continue // skip a member with unparseable peer URLs
+			}
+			peers = append(peers, parsed)
 		}
-		urls, err := types.NewURLs(m.PeerURLs)
-		if err != nil {
-			continue // skip a member with unparseable peer URLs
-		}
-		peers[name] = urls
 	}
 	return peers
 }

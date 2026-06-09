@@ -92,7 +92,7 @@ type EtcdImpl struct {
 //
 // The builder starts from embed.NewConfig() — the minimum configuration that
 // passes embed.Config.Validate() — and revalidates after every With* call.
-func New() *EtcdImpl {
+func New() v1.Etcd {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
 	cfg.Name = defaultName()
@@ -120,4 +120,8 @@ func New() *EtcdImpl {
 	// can still mint a server from embed.NewConfig()'s baseline.
 	b.mutate(func() error { return nil })
 	return b
+}
+
+func From(peers v1.Peers) v1.EtcdPeer {
+	return nil
 }

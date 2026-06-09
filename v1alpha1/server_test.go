@@ -3,6 +3,7 @@ package v1alpha1_test
 import (
 	"testing"
 
+	v1 "github.com/cnuss/libetcd/v1"
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
@@ -10,7 +11,7 @@ import (
 // listeners), and registers Stop for cleanup. Going through Start/Stop releases
 // the backend and WAL file handles, which matters on Windows where t.TempDir's
 // RemoveAll fails if the WAL is still open.
-func startedNode(t *testing.T) *v1alpha1.EtcdImpl {
+func startedNode(t *testing.T) v1.Etcd {
 	t.Helper()
 	e := v1alpha1.New()
 	e.WithDir(t.TempDir())

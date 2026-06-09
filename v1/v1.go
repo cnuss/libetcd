@@ -12,12 +12,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 
-	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"google.golang.org/grpc"
 )
+
+type Peers []*url.URL
 
 // Server exposes the server-side handles minted from a configured node: the raw
 // etcdserver, its listeners, HTTP handlers, http.Servers, and the gRPC server.
@@ -76,7 +78,7 @@ type Client interface {
 	// matches the ServerConfig InitialPeerURLsMap. Learners are included; members
 	// not yet reporting a name are keyed by their ID in hex. Nil if the server
 	// can't be minted or the member list is unavailable.
-	Peers() types.URLsMap
+	Peers() Peers
 }
 
 // Builder configures an embedded etcd node. Configure it with the With* methods
@@ -92,19 +94,19 @@ type Client interface {
 // logging (a silent node; call WithLog to enable it). New also applies
 // opinionated tuning for embedded use (longer raft tick/election, generous
 // snapshot retention).
-type Builder interface {
+type Builder[T any] interface {
 	// WithName sets the node (member) name. Default: a unique generated name.
-	WithName(name string) Etcd
+	WithName(name string) T
 	// WithDir sets the data directory. Default: a fresh temp directory.
-	WithDir(dir string) Etcd
+	WithDir(dir string) T
 	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
-	WithClusterToken(token string) Etcd
+	WithClusterToken(token string) T
 	// WithLog routes the server's logs to writer at the given level (e.g.
 	// "debug", "info", "warn", "error"). A node is silent by default.
-	WithLog(level string, writer io.Writer) Etcd
+	WithLog(level string, writer io.Writer) T
 	// WithContext ties the node's lifetime to ctx: when ctx is cancelled, the
 	// node is gracefully Stopped. Without it, the node runs until Stop is called.
-	WithContext(ctx context.Context) Etcd
+	WithContext(ctx context.Context) T
 	// WithClientServing configures how the client (v3 API) is served, unifying the
 	// listener and the http.Server in one call.
 	//
@@ -119,7 +121,7 @@ type Builder interface {
 	//
 	// Both nil is equivalent to not calling it. Replaces the former
 	// WithClientListener + WithClientHTTP pair.
-	WithClientServing(lis net.Listener, srv *http.Server) Etcd
+	WithClientServing(lis net.Listener, srv *http.Server) T
 	// WithPeerServing configures how the peer (raft) protocol is served, unifying
 	// the listener and the http.Server in one call.
 	//
@@ -134,7 +136,7 @@ type Builder interface {
 	//
 	// Both nil is equivalent to not calling it: a free loopback listener serving
 	// the raft handler. Replaces the former WithPeerListener + WithPeerHTTP pair.
-	WithPeerServing(lis net.Listener, srv *http.Server) Etcd
+	WithPeerServing(lis net.Listener, srv *http.Server) T
 }
 
 type Executor interface {
@@ -154,6 +156,13 @@ type Executor interface {
 type Etcd interface {
 	Server
 	Client
-	Builder
+	Builder[Etcd]
 	Executor
+}
+
+type EtcdPeer interface {
+	Client
+	Builder[EtcdPeer]
+
+	Join() error
 }

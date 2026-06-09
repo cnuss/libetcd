@@ -98,7 +98,7 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	b.mu.Lock()
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
-	return etcdhttp.NewPeerHandler(lg, srv)
+	return etcdhttp.NewPeercrHandler(lg, srv)
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —

@@ -12,12 +12,12 @@ func TestPeers(t *testing.T) {
 	if len(peers) != 1 {
 		t.Fatalf("Peers: got %d entries, want 1: %v", len(peers), peers)
 	}
-	for name, urls := range peers {
-		if name == "" {
+	for _, url := range peers {
+		if url == nil {
 			t.Errorf("Peers: empty member name")
 		}
-		if len(urls) == 0 {
-			t.Errorf("Peers: member %q has no peer URLs", name)
+		if url.String() == "" {
+			t.Errorf("Peers: member %q has no peer URLs", url)
 		}
 	}
 }

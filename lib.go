@@ -36,3 +36,7 @@ import (
 func New() v1.Etcd {
 	return v1alpha1.New()
 }
+
+func From(peers v1.Peers) v1.EtcdPeer {
+	return v1alpha1.From(peers)
+}
