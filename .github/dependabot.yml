@@ -15,8 +15,20 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Batch routine bumps into one PR; majors stay individual so each
+    # compatibility-affecting change (and the module floor it implies) is
+    # reviewed on its own. Go has no dev/prod dependency split, so the only
+    # meaningful grouping axis is update-type.
+    groups:
+      go-deps:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    # Action pins are low-risk to batch; group everything into one PR.
+    groups:
+      github-actions:
+        patterns: ["*"]
