@@ -15,6 +15,13 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Only bump direct dependencies. The indirect graph (e.g. otel, pulled
+    # transitively by etcd) floats with the direct dep that requires it, so
+    # bumping indirect modules on their own is churn that drifts them out of
+    # step with their requirer. Security updates still fire for indirect deps —
+    # `allow` does not gate them — so vuln coverage is unaffected.
+    allow:
+      - dependency-type: direct
     # Batch routine bumps into one PR; majors stay individual so each
     # compatibility-affecting change (and the module floor it implies) is
     # reviewed on its own. Go has no dev/prod dependency split, so the only
