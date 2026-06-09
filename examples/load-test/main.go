@@ -18,8 +18,13 @@ func main() {
 
 	load := examples.NewLoad(ctx, 2*time.Second)
 
+	// TEMP: info logging to capture etcd's snapshot decision on Windows
+	// ("sending merged snapshot" on the leader, "applying snapshot" on the
+	// joiner) — diagnosing the Windows snapshot-backend panic.
+	const lvl = "info"
+
 	// Node 1 up — registering it kicks off load immediately.
-	e1 := libetcd.New().WithContext(ctx)
+	e1 := libetcd.New().WithLogLevel(lvl).WithContext(ctx)
 	if err := e1.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -33,7 +38,7 @@ func main() {
 		case <-ctx.Done():
 			return // cancelling ctx gracefully stops every node
 		case <-ticker.C:
-			n := libetcd.New().WithContext(ctx)
+			n := libetcd.New().WithLogLevel(lvl).WithContext(ctx)
 			if err := n.Join(e1); err != nil {
 				if ctx.Err() != nil {
 					return // test over
