@@ -70,26 +70,20 @@ package main
 import (
 	"context"
 	"log"
-	"net/url"
 
 	"github.com/cnuss/libetcd"
-	v1 "github.com/cnuss/libetcd/v1"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Peer URLs of members already in the cluster.
-	var peers v1.Peers
-	for _, raw := range []string{"http://10.0.0.1:2380", "http://10.0.0.2:2380"} {
-		u, err := url.Parse(raw)
-		if err != nil {
-			log.Fatal(err)
-		}
-		peers = append(peers, u)
-	}
+	// Peer (raft) URLs of members already in the cluster. Plain strings —
+	// bare host:port, http://, or https:// all work; From normalizes them and
+	// drops any it can't parse. A hardcoded list here; in practice from config
+	// or another node's Peers().
+	peers := []string{"10.0.0.1:2380", "http://10.0.0.2:2380"}
 
-	node := libetcd.From(peers).WithContext(ctx)
+	node := libetcd.From(peers...).WithContext(ctx)
 	if err := node.Join(); err != nil {
 		log.Fatal(err)
 	}
@@ -126,7 +120,7 @@ For the file-by-file map, see
 
 ```go
 func New() Etcd                 // a fresh, startable node
-func From(peers Peers) EtcdPeer // a node that joins the cluster at those peer URLs
+func From(peers ...string) EtcdPeer // a node that joins the cluster at those peer URLs
 
 type Etcd interface {
     Server        // server-side handles
@@ -186,9 +180,11 @@ type EtcdPeer interface {
     Join() error      // discover a client endpoint via the peers' /members, add as
                       // learner, seed from a leader snapshot, promote to voting
 }
-
-type Peers []*url.URL // member peer (raft) URLs
 ```
+
+Peer URLs are plain strings — bare `host:port`, `http://`, or `https://`
+entries all work. At `Join` time `From` trims them, defaults a missing scheme
+to `http`, de-duplicates, and silently drops any it can't parse.
 
 ## Examples
 

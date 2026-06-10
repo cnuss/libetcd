@@ -27,7 +27,7 @@ func main() {
 	}
 
 	// Node 2: join using only node 1's peer URLs — no pre-dialed client.
-	node2 := libetcd.From(node1.Peers()).WithContext(ctx)
+	node2 := libetcd.From(node1.Peers()...).WithContext(ctx)
 	if err := node2.Join(); err != nil {
 		log.Fatal(err)
 	}

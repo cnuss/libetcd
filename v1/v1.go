@@ -12,16 +12,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"google.golang.org/grpc"
 )
-
-// Peers is a flat list of member peer (raft) URLs. Client.Peers returns one for
-// a running cluster; From takes one to join a new node to that cluster.
-type Peers []*url.URL
 
 // Server exposes the server-side handles minted from a configured node: the raw
 // etcdserver, its listeners, HTTP handlers, http.Servers, and the gRPC server.
@@ -79,7 +74,7 @@ type Client interface {
 	// via Self's MemberList (learners included). Pass it to From to join another
 	// node to this cluster. Empty if the server can't be minted or the member
 	// list is unavailable.
-	Peers() Peers
+	Peers() []string
 }
 
 // Builder configures an embedded etcd node. Configure it with the With* methods

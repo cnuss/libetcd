@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -25,7 +26,7 @@ import (
 // With* return v1.Etcd; this wrapper re-types them.
 type peerJoiner struct {
 	*EtcdImpl
-	peers v1.Peers
+	peers []string
 }
 
 var _ v1.EtcdPeer = (*peerJoiner)(nil)
@@ -74,8 +75,9 @@ func (p *peerJoiner) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd
 // a leader snapshot, promote). It blocks until the node is voting or the
 // bounding context elapses.
 func (p *peerJoiner) Join() error {
-	if len(p.peers) == 0 {
-		return errors.New("join: no peer URLs")
+	peers := sanitizePeers(p.peers)
+	if len(peers) == 0 {
+		return errors.New("join: no valid peer URLs")
 	}
 
 	p.mu.Lock()
@@ -91,7 +93,7 @@ func (p *peerJoiner) Join() error {
 	// Discover the cluster's client endpoints from the peer handlers.
 	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	eps, err := clientEndpointsFromPeers(dctx, p.peers)
+	eps, err := clientEndpointsFromPeers(dctx, peers)
 	if err != nil {
 		return fmt.Errorf("join: discover endpoints: %w", err)
 	}
@@ -109,17 +111,50 @@ func (p *peerJoiner) Join() error {
 	return p.EtcdImpl.joinWith(mc)
 }
 
+// sanitizePeers normalizes the caller-supplied list of peer (raft) URLs into a
+// clean, de-duplicated list ready to scrape. For each entry it trims surrounding
+// whitespace, defaults a missing scheme to http (so a bare "host:port" works),
+// and parses it as an absolute http/https URL with a host. Anything that doesn't
+// parse — empty, malformed, wrong scheme, no host — is silently dropped rather
+// than failing the whole join: a few bad entries shouldn't sink a list that also
+// holds reachable peers. Duplicates are removed, first-seen order preserved.
+func sanitizePeers(peers []string) []string {
+	out := make([]string, 0, len(peers))
+	seen := make(map[string]struct{}, len(peers))
+	for _, raw := range peers {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, "://") {
+			s = "http://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			continue
+		}
+		u.Path = strings.TrimRight(u.Path, "/")
+		norm := u.String()
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		out = append(out, norm)
+	}
+	return out
+}
+
 // clientEndpointsFromPeers asks each peer's raft handler for the cluster
 // membership (GET <peer>/members) concurrently, and returns the client URLs of
 // the first peer that answers with at least one voting member. Learners are
 // excluded: they don't serve raft, and their client URLs are no better an
 // entrypoint than a voter's. First non-empty answer wins; the rest are dropped.
-func clientEndpointsFromPeers(ctx context.Context, peers v1.Peers) ([]string, error) {
+func clientEndpointsFromPeers(ctx context.Context, peers []string) ([]string, error) {
 	type result struct{ eps []string }
 	ch := make(chan result, len(peers))
 
 	for _, peer := range peers {
-		go func(peer *url.URL) {
+		go func(peer string) {
 			members, err := fetchMembers(ctx, peer)
 			if err != nil {
 				return
@@ -150,8 +185,11 @@ func clientEndpointsFromPeers(ctx context.Context, peers v1.Peers) ([]string, er
 
 // fetchMembers GETs <peer>/members and decodes the JSON []*membership.Member the
 // peer (raft) handler serves there over HTTP/1.1.
-func fetchMembers(ctx context.Context, peer *url.URL) ([]*membership.Member, error) {
-	u := *peer
+func fetchMembers(ctx context.Context, peer string) ([]*membership.Member, error) {
+	u, err := url.Parse(peer)
+	if err != nil {
+		return nil, err
+	}
 	u.Path = "/members"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
