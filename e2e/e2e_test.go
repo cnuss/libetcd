@@ -70,10 +70,10 @@ func TestExamples(t *testing.T) {
 		{"join-from-peers", "node 2 joined and read: hello from the cluster"},
 		{"load-test", "rtrips/s"},
 	}
+	// Examples run serially: each boots a real embedded node binding loopback
+	// ports, and concurrent runs contend for ports and CPU.
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			assertExample(t, tc.name, tc.want)
 		})
 	}
