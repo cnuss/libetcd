@@ -41,7 +41,7 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 		}
 
 		b.mu.Lock()
-		srvcfg, cause := b.srvcfg, context.Cause(b.ctx)
+		srvcfg, cause, lg := b.srvcfg, context.Cause(b.ctx), b.cfg.GetLogger()
 		b.mu.Unlock()
 
 		if cause != nil {
@@ -52,6 +52,10 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 			b.cancel(fmt.Errorf("new server: %w", err))
 			return
 		}
+		// Wrap the raft stream RoundTripper so the serve-side 206 is accepted by
+		// the stock reader (issue #8). Done here — after NewServer mints it,
+		// before Start dials — see interceptRaftStream.
+		interceptRaftStream(srv, lg)
 		b.srv = srv
 	})
 	return b.srv
@@ -106,8 +110,8 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 		// instead of holding it (see issue #8). The stream handler is the sole
 		// 200 on this mux; pipeline writes 204 and /members, /version, lease,
 		// etc. return real 200+body that must pass through untouched — hence the
-		// path scope. The dial side must accept 206 (or rewrite it back to 200)
-		// for the peers to agree.
+		// path scope. The dial side rewrites the 206 back to 200 before the stock
+		// reader (streamAccept206, streamrewrite.go) so the peers agree.
 		if strings.HasPrefix(r.URL.Path, rafthttp.RaftStreamPrefix) {
 			w = &streamStatusRewriter{ResponseWriter: w}
 		}
