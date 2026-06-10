@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
@@ -98,7 +99,40 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	b.mu.Lock()
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
-	return etcdhttp.NewPeerHandler(lg, srv)
+	innerH := etcdhttp.NewPeerHandler(lg, srv)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// On the raft stream path only, rewrite the long-lived stream's success
+		// status from 200 to 206 so a buffering intermediary streams the body
+		// instead of holding it (see issue #8). The stream handler is the sole
+		// 200 on this mux; pipeline writes 204 and /members, /version, lease,
+		// etc. return real 200+body that must pass through untouched — hence the
+		// path scope. The dial side must accept 206 (or rewrite it back to 200)
+		// for the peers to agree.
+		if strings.HasPrefix(r.URL.Path, rafthttp.RaftStreamPrefix) {
+			w = &streamStatusRewriter{ResponseWriter: w}
+		}
+		innerH.ServeHTTP(w, r)
+	})
+}
+
+// streamStatusRewriter rewrites a 200 OK status to 206 Partial Content on the
+// raft stream path. It preserves http.Flusher because rafthttp's streamHandler
+// type-asserts the ResponseWriter to Flusher (and would panic without it).
+type streamStatusRewriter struct {
+	http.ResponseWriter
+}
+
+func (w *streamStatusRewriter) WriteHeader(code int) {
+	if code == http.StatusOK {
+		code = http.StatusPartialContent
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *streamStatusRewriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —
