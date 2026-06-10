@@ -79,6 +79,26 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 	if with == nil {
 		return errors.New("join: nil client")
 	}
+	// A leader-pinned client to the existing cluster for the membership changes
+	// (clientv3 would forward anyway, but pinning avoids the extra hop).
+	mc := with.Leader()
+	if mc == nil {
+		mc = with.Voters()
+	}
+	if mc == nil {
+		return errors.New("join: no usable client from peer")
+	}
+	defer mc.Close()
+	return b.joinWith(mc)
+}
+
+// joinWith runs the managed join over an already-dialed client to an existing
+// member: bind listeners, add self as a learner, seed from a leader snapshot,
+// start, and promote to a voting member. It is the shared core of Executor.Join
+// (which gets the client from a peer node) and From().Join (which discovers the
+// client from a list of peer URLs). It blocks until the node is voting or the
+// bounding context elapses; the caller owns mc.
+func (b *EtcdImpl) joinWith(mc *clientv3.Client) error {
 	// Bind listeners first so the self peer URL is concrete before member-add.
 	if err := b.ensureListeners(); err != nil {
 		return err
@@ -99,17 +119,6 @@ func (b *EtcdImpl) Join(with v1.Client) error {
 		ctx, cancel = context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 	}
-
-	// A leader-pinned client to the existing cluster for the membership changes
-	// (clientv3 would forward anyway, but pinning avoids the extra hop).
-	mc := with.Leader()
-	if mc == nil {
-		mc = with.Voters()
-	}
-	if mc == nil {
-		return errors.New("join: no usable client from peer")
-	}
-	defer mc.Close()
 
 	// Existing members, for this node's initial-cluster string.
 	ml, err := mc.MemberList(ctx)

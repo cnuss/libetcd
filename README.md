@@ -57,6 +57,50 @@ func main() {
 
 (Full source: [`examples/single-node/main.go`](./examples/single-node/main.go).)
 
+### Join an existing cluster
+
+Give `From` the peer (raft) URLs of any current members — a hardcoded list, from
+config, or another node's `Peers()`. `Join` discovers a client endpoint by
+scraping the peers' `/members`, adds the node as a learner, catches it up, and
+promotes it to a voting member:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"net/url"
+
+	"github.com/cnuss/libetcd"
+	v1 "github.com/cnuss/libetcd/v1"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Peer URLs of members already in the cluster.
+	var peers v1.Peers
+	for _, raw := range []string{"http://10.0.0.1:2380", "http://10.0.0.2:2380"} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			log.Fatal(err)
+		}
+		peers = append(peers, u)
+	}
+
+	node := libetcd.From(peers).WithContext(ctx)
+	if err := node.Join(); err != nil {
+		log.Fatal(err)
+	}
+
+	// node is now a voting member; Self reads the replicated keyspace.
+	node.Self().Put(ctx, "joined", "true")
+}
+```
+
+(Full source: [`examples/join-from-peers/main.go`](./examples/join-from-peers/main.go).)
+
 ## Layout
 
 Three packages, stable/alpha versioning:
@@ -77,27 +121,29 @@ For the file-by-file map, see
 
 ## API at a glance
 
-`New()` returns the full node — an `Etcd`, composed of three interfaces:
+`New()` returns the full node (an `Etcd`); `From()` returns a join-only node (an
+`EtcdPeer`):
 
 ```go
-func New() Etcd
+func New() Etcd                 // a fresh, startable node
+func From(peers Peers) EtcdPeer // a node that joins the cluster at those peer URLs
 
 type Etcd interface {
-    Server   // server-side handles
-    Client   // clientv3 clients
-    Builder  // configuration
-    Executor // lifecycle
+    Server        // server-side handles
+    Client        // clientv3 clients
+    Builder[Etcd] // configuration (setters chain back to Etcd)
+    Executor      // lifecycle
 }
 
-// Builder — configure; each returns the node (Etcd), mutating it in place.
-type Builder interface {
-    WithName(name string) Etcd                // member name; default: a unique generated name
-    WithDir(dir string) Etcd                  // data dir; default: a fresh temp dir
-    WithClusterToken(token string) Etcd       // initial-cluster token; default "libetcd-cluster"
-    WithLog(level string, w io.Writer) Etcd   // route logs to w at level; silent by default
-    WithContext(ctx context.Context) Etcd     // cancel ctx => graceful Stop
-    WithClientServing(l net.Listener, srv *http.Server) Etcd // client listener + server (v3 API)
-    WithPeerServing(l net.Listener, srv *http.Server) Etcd   // peer listener + server; raft + app share a port
+// Builder[T] — configure; each setter returns T (Etcd or EtcdPeer), mutating in place.
+type Builder[T any] interface {
+    WithName(name string) T                // member name; default: a unique generated name
+    WithDir(dir string) T                  // data dir; default: a fresh temp dir
+    WithClusterToken(token string) T       // initial-cluster token; default "libetcd-cluster"
+    WithLog(level string, w io.Writer) T   // route logs to w at level; silent by default
+    WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
+    WithClientServing(l net.Listener, srv *http.Server) T // client listener + server (v3 API)
+    WithPeerServing(l net.Listener, srv *http.Server) T   // peer listener + server; raft + app share a port
 }
 
 // Executor — lifecycle.
@@ -125,25 +171,42 @@ type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
     Voters() *clientv3.Client  // networked client (dials voting members)
-    Peers() types.URLsMap      // live peer topology via MemberList (name -> peer URLs)
+    Peers() Peers              // members' peer (raft) URLs; feed to From
 }
+```
+
+`EtcdPeer` (from `From`) is a join-only node: the `Client` accessors and `Builder`
+setters (chaining back to `EtcdPeer`), plus `Join` — but no `Start`.
+
+```go
+// EtcdPeer — join an existing cluster from a list of peer URLs.
+type EtcdPeer interface {
+    Client            // Self / Leader / Voters / Peers
+    Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
+    Join() error      // discover a client endpoint via the peers' /members, add as
+                      // learner, seed from a leader snapshot, promote to voting
+}
+
+type Peers []*url.URL // member peer (raft) URLs
 ```
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example       | Demonstrates                                                     |
-| ------------- | --------------------------------------------------------------- |
-| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
-| `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key. |
-| `load-test`   | Grow a cluster under read/write load for 30s; print throughput + latency. |
+| Example           | Demonstrates                                                     |
+| ----------------- | --------------------------------------------------------------- |
+| `single-node`     | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
+| `multi-node`      | Bring up a node, `Join` a second to it, read the replicated key. |
+| `join-from-peers` | Join a node to a cluster from peer URLs via `From(...).Join()`.  |
+| `load-test`       | Grow a cluster under read/write load for 30s; print throughput + latency. |
 
 Run one locally:
 
 ```sh
 make run single-node
 make run multi-node
+make run join-from-peers
 make run load-test
 ```
 

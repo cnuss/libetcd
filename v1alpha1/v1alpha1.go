@@ -92,7 +92,13 @@ type EtcdImpl struct {
 //
 // The builder starts from embed.NewConfig() — the minimum configuration that
 // passes embed.Config.Validate() — and revalidates after every With* call.
-func New() *EtcdImpl {
+func New() v1.Etcd {
+	return newImpl()
+}
+
+// newImpl builds a concrete *EtcdImpl. New returns it as the full v1.Etcd
+// surface; From wraps it as the join-only v1.EtcdPeer surface.
+func newImpl() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
 	cfg.Name = defaultName()
@@ -120,4 +126,11 @@ func New() *EtcdImpl {
 	// can still mint a server from embed.NewConfig()'s baseline.
 	b.mutate(func() error { return nil })
 	return b
+}
+
+// From returns a join-only builder for a node that will join the cluster
+// reachable at the given peer URLs. Configure it with the With* methods, then
+// call Join; see peerJoiner.
+func From(peers v1.Peers) v1.EtcdPeer {
+	return &peerJoiner{EtcdImpl: newImpl(), peers: peers}
 }

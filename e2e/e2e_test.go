@@ -67,6 +67,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"single-node", "greeting: hello world"},
 		{"multi-node", "greeting from node 2: hello world"},
+		{"join-from-peers", "node 2 joined and read: hello from the cluster"},
 		{"load-test", "rtrips/s"},
 	}
 	for _, tc := range cases {
