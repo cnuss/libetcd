@@ -5,6 +5,7 @@ import (
 
 	v1 "github.com/cnuss/libetcd/v1"
 	"github.com/cnuss/libetcd/v1alpha1"
+	"github.com/cnuss/libetcd/v1alpha1/stream"
 )
 
 // startedNode builds a node on a temp dir, starts it (auto-binding loopback
@@ -26,6 +27,18 @@ func startedNode(t *testing.T) v1.Etcd {
 func TestServerMints(t *testing.T) {
 	if startedNode(t).Server() == nil {
 		t.Fatal("nil server")
+	}
+}
+
+// TestRaftStreamIntercepted is the layout guard for the reflection in
+// stream.Intercept: minting a server runs Intercept, and stream.Intercepted
+// re-walks the same unexported path (EtcdServer.r → raftNodeConfig.transport →
+// Transport.streamRt) to confirm the raft stream RoundTripper is now wrapped. If
+// a future etcd bump renames or restructures any hop, this fails loudly in CI
+// instead of silently dropping the 206 rewrite at a consumer's runtime.
+func TestRaftStreamIntercepted(t *testing.T) {
+	if !stream.Intercepted(startedNode(t).Server()) {
+		t.Fatal("raft stream RoundTripper not intercepted — etcd internal layout likely changed")
 	}
 }
 

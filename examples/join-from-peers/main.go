@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 
 	"github.com/cnuss/libetcd"
 )
@@ -17,9 +16,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // cancelling the context gracefully stops the nodes
 
-	// Node 1: a fresh single-node cluster serving the peer protocol on a known
-	// listener, with a key to replicate.
-	node1 := libetcd.New().WithContext(ctx).WithPeerServing(listener(), nil)
+	// Node 1: a fresh single-node cluster (peer + client listeners auto-bound to
+	// free loopback ports), with a key to replicate.
+	node1 := libetcd.New().WithContext(ctx)
 	if err := node1.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -39,12 +38,4 @@ func main() {
 	}
 	fmt.Printf("node 2 joined and read: %s\n", resp.Kvs[0].Value)
 	// Output: node 2 joined and read: hello from the cluster
-}
-
-func listener() net.Listener {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		log.Fatal(err)
-	}
-	return l
 }

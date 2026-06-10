@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/cnuss/libetcd/v1alpha1/stream"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
@@ -40,7 +41,7 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 		}
 
 		b.mu.Lock()
-		srvcfg, cause := b.srvcfg, context.Cause(b.ctx)
+		srvcfg, cause, lg := b.srvcfg, context.Cause(b.ctx), b.cfg.GetLogger()
 		b.mu.Unlock()
 
 		if cause != nil {
@@ -51,6 +52,10 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 			b.cancel(fmt.Errorf("new server: %w", err))
 			return
 		}
+		// Wrap the raft stream RoundTripper so the serve-side 206 is accepted by
+		// the stock reader (issue #8). Done here — after NewServer mints it,
+		// before Start dials — see stream.Intercept.
+		stream.Intercept(srv, lg)
 		b.srv = srv
 	})
 	return b.srv
@@ -98,7 +103,10 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	b.mu.Lock()
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
-	return etcdhttp.NewPeerHandler(lg, srv)
+	// Wrap so the raft stream's success status goes out as 206 on the wire; the
+	// dial side (stream.Intercept, called from Server) rewrites it back to 200
+	// before the stock reader. See package stream (issue #8).
+	return stream.Handler(etcdhttp.NewPeerHandler(lg, srv))
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —
