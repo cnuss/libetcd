@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 
+	"github.com/cnuss/libetcd/v1alpha1/stream"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
@@ -54,8 +54,8 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 		}
 		// Wrap the raft stream RoundTripper so the serve-side 206 is accepted by
 		// the stock reader (issue #8). Done here — after NewServer mints it,
-		// before Start dials — see interceptRaftStream.
-		interceptRaftStream(srv, lg)
+		// before Start dials — see stream.Intercept.
+		stream.Intercept(srv, lg)
 		b.srv = srv
 	})
 	return b.srv
@@ -103,40 +103,10 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	b.mu.Lock()
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
-	innerH := etcdhttp.NewPeerHandler(lg, srv)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// On the raft stream path only, rewrite the long-lived stream's success
-		// status from 200 to 206 so a buffering intermediary streams the body
-		// instead of holding it (see issue #8). The stream handler is the sole
-		// 200 on this mux; pipeline writes 204 and /members, /version, lease,
-		// etc. return real 200+body that must pass through untouched — hence the
-		// path scope. The dial side rewrites the 206 back to 200 before the stock
-		// reader (streamAccept206, streamrewrite.go) so the peers agree.
-		if strings.HasPrefix(r.URL.Path, rafthttp.RaftStreamPrefix) {
-			w = &streamStatusRewriter{ResponseWriter: w}
-		}
-		innerH.ServeHTTP(w, r)
-	})
-}
-
-// streamStatusRewriter rewrites a 200 OK status to 206 Partial Content on the
-// raft stream path. It preserves http.Flusher because rafthttp's streamHandler
-// type-asserts the ResponseWriter to Flusher (and would panic without it).
-type streamStatusRewriter struct {
-	http.ResponseWriter
-}
-
-func (w *streamStatusRewriter) WriteHeader(code int) {
-	if code == http.StatusOK {
-		code = http.StatusPartialContent
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func (w *streamStatusRewriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	// Wrap so the raft stream's success status goes out as 206 on the wire; the
+	// dial side (stream.Intercept, called from Server) rewrites it back to 200
+	// before the stock reader. See package stream (issue #8).
+	return stream.Handler(etcdhttp.NewPeerHandler(lg, srv))
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —

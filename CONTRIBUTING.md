@@ -19,6 +19,7 @@ Deep-link by filename; line numbers will drift.
 | Executor lifecycle (`Start`/`Stop`/`Join`)     | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
 | Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v1alpha1/peer.go`](./v1alpha1/peer.go)                         |
 | Snapshot seed fork (join)                      | [`v1alpha1/snapshot/`](./v1alpha1/snapshot)                      |
+| Raft stream 206 handling (issue #8)            | [`v1alpha1/stream/`](./v1alpha1/stream)                          |
 | gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
 | Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
