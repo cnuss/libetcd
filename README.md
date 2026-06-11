@@ -93,8 +93,11 @@ func main() {
 }
 ```
 
-(Full source: [`examples/multi-node/main.go`](./examples/multi-node/main.go); for
-concurrent joins, [`examples/async-join/main.go`](./examples/async-join/main.go).)
+Joins are safe to run concurrently — `Join` serializes membership changes
+through a lock held in the target cluster, so several nodes (even in separate
+processes) can call it at once. Working examples:
+[`examples/multi-node/main.go`](./examples/multi-node/main.go) (one join),
+[`examples/async-join/main.go`](./examples/async-join/main.go) (three at once).
 
 ## Layout
 
