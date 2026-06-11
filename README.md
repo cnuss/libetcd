@@ -95,7 +95,10 @@ func main() {
 
 Joins are safe to run concurrently — `Join` serializes membership changes
 through a lock held in the target cluster, so several nodes (even in separate
-processes) can call it at once. Working examples:
+processes) can call it at once. The lock writes transient coordination keys
+under the `libetcd/lock/` prefix in the target cluster's keyspace — visible to
+scans, watchers, and backups — so applications should avoid keys under that
+prefix. Working examples:
 [`examples/multi-node/main.go`](./examples/multi-node/main.go) (one join),
 [`examples/async-join/main.go`](./examples/async-join/main.go) (three at once).
 [`examples/load-join/main.go`](./examples/load-join/main.go) (concurrent joins
@@ -139,7 +142,7 @@ type Etcd interface {
 type Builder[T any] interface {
     WithName(name string) T                // member name; default: a unique generated name
     WithDir(dir string) T                  // data dir; default: a fresh temp dir
-    WithClusterToken(token string) T       // initial-cluster token; default "libetcd-cluster"
+    WithClusterToken(token string) T       // initial-cluster token; default "etcd-cluster"
     WithLog(level string, w io.Writer) T   // route logs to w at level; silent by default
     WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
     WithClientServing(l net.Listener, srv *http.Server) T // client listener + server (v3 API)
@@ -191,8 +194,12 @@ type EtcdPeer interface {
 ```
 
 Peer URLs are plain strings — bare `host:port`, `http://`, or `https://`
-entries all work. At `Join` time `From` trims them, defaults a missing scheme
-to `http`, de-duplicates, and silently drops any it can't parse.
+entries are accepted. At `Join` time `From` trims them, defaults a missing
+scheme to `http`, de-duplicates, and silently drops any it can't parse.
+`https://` entries only work against clusters whose endpoints present
+publicly-trusted certificates and don't require client-cert auth; mutual-TLS or
+private-CA clusters are not yet supported on the join path
+([#57](https://github.com/cnuss/libetcd/issues/57)).
 
 ## Examples
 

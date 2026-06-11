@@ -3,7 +3,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -120,11 +119,12 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 	return cli
 }
 
-// Peers returns the flat list of every member's peer (raft) URLs, discovered by
-// calling MemberList through the in-process Self client. Learners are included.
-// The list is what From consumes to join a node to this cluster (it scrapes each
-// peer's /members handler). Returns an empty slice if the server can't be minted
-// or the member list is unavailable.
+// Peers returns the flat list of every member's peer (raft) URLs, verbatim as
+// reported by MemberList through the in-process Self client. Learners are
+// included. The list is what From consumes to join a node to this cluster (it
+// scrapes each peer's /members handler, re-validating each URL via its own
+// sanitization first). Returns an empty slice if the server can't be minted or
+// the member list is unavailable.
 func (b *EtcdImpl) Peers() []string {
 	self := b.Self()
 	if self == nil {
@@ -140,13 +140,7 @@ func (b *EtcdImpl) Peers() []string {
 
 	peers := []string{}
 	for _, m := range ml.Members {
-		for _, u := range m.PeerURLs {
-			parsed, err := url.Parse(u)
-			if err != nil {
-				continue // skip a member with unparseable peer URLs
-			}
-			peers = append(peers, parsed.String())
-		}
+		peers = append(peers, m.PeerURLs...)
 	}
 	return peers
 }
