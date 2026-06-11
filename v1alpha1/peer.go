@@ -3,9 +3,9 @@ package v1alpha1
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,9 +13,11 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 
 	v1 "github.com/cnuss/libetcd/v1"
+	"github.com/cnuss/libetcd/v1alpha1/lock"
 )
 
 // peerJoiner is the join-only builder returned by From. It wraps a concrete
@@ -70,45 +72,198 @@ func (p *peerJoiner) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd
 }
 
 // Join brings this node into the cluster reachable at the configured peer URLs.
-// It discovers a client endpoint by scraping the peer (raft) handler's /members
-// endpoint on those URLs, then runs the managed join (add-as-learner, seed from
-// a leader snapshot, promote). It blocks until the node is voting or the
-// bounding context elapses.
+// Not implemented: the managed-join flow is being rebuilt as the single join
+// path. See https://github.com/cnuss/libetcd/issues/36.
 func (p *peerJoiner) Join() error {
-	peers := sanitizePeers(p.peers)
-	if len(peers) == 0 {
-		return errors.New("join: no valid peer URLs")
+	logger := p.Logger()
+	if err := p.ensureListeners(); err != nil {
+		return fmt.Errorf("ensuring listeners: %w", err)
 	}
 
 	p.mu.Lock()
-	uctx := p.userCtx
-	lg := p.cfg.GetLogger()
+	ctx := p.userCtx
+	name := p.cfg.Name
+	advertisePeerUrls := p.cfg.AdvertisePeerUrls
+	advertiseClientUrls := p.cfg.AdvertiseClientUrls
 	p.mu.Unlock()
 
-	ctx := context.Background()
-	if uctx != nil {
-		ctx = uctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	// Discover the cluster's client endpoints from the peer handlers.
-	dctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	eps, err := clientEndpointsFromPeers(dctx, peers)
+	peers := sanitizePeers(p.peers)
+	if len(peers) == 0 {
+		return fmt.Errorf("no valid peer URLs: %v", p.peers)
+	}
+
+	endpoints, err := clientEndpointsFromPeers(ctx, peers)
 	if err != nil {
-		return fmt.Errorf("join: discover endpoints: %w", err)
+		return fmt.Errorf("discovering client endpoints from peers: %w", err)
 	}
 
-	mc, err := clientv3.New(clientv3.Config{
-		Endpoints:   eps,
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,
-		Logger:      lg,
+		Logger:      logger,
 	})
 	if err != nil {
-		return fmt.Errorf("join: dial discovered endpoints: %w", err)
+		return fmt.Errorf("creating client: %w", err)
 	}
-	defer mc.Close()
+	defer cli.Close()
 
-	return p.EtcdImpl.joinWith(mc)
+	joinLock, err := lock.Acquire(ctx, cli, "peer-join")
+	if err != nil {
+		return fmt.Errorf("acquiring join lock: %w", err)
+	}
+	defer joinLock.Release()
+	log.Printf("!!! got lock at %s, joining cluster... (key: %s)\n", time.Now().Format(time.RFC3339), joinLock.Key())
+
+	selfAddrs := func() []string {
+		addrs := []string{}
+		for _, u := range advertisePeerUrls {
+			addrs = append(addrs, u.String())
+		}
+		return addrs
+	}()
+
+	// Add self as a learner, blocking through transient rejections: a prior
+	// joiner's promotion raises quorum and the leader's StrictReconfigCheck
+	// reports "unhealthy cluster" until the new voter's raft stream goes active.
+	var member *clientv3.MemberAddResponse
+	if err := retryUntil(ctx, time.Second, 5*time.Second, "adding self as learner", func(actx context.Context) error {
+		m, err := cli.MemberAddAsLearner(actx, selfAddrs)
+		if err == nil {
+			member = m
+		}
+		return err
+	}); err != nil {
+		return err
+	}
+	log.Printf("!!! added self as learner: %v\n", member)
+
+	members, err := cli.MemberList(ctx)
+	if err != nil {
+		return fmt.Errorf("listing members: %w", err)
+	}
+
+	initialCluster := []string{}
+	for _, m := range members.Members {
+		if m.Name == "" || m.IsLearner {
+			continue
+		}
+		for _, pu := range m.PeerURLs {
+			initialCluster = append(initialCluster, fmt.Sprintf("%s=%s", m.Name, pu))
+		}
+	}
+	for _, pu := range advertisePeerUrls {
+		initialCluster = append(initialCluster, fmt.Sprintf("%s=%s", name, pu.String()))
+	}
+	log.Printf("!!! initial cluster: %v\n", initialCluster)
+
+	p.mutate(func() error {
+		p.cfg.InitialCluster = strings.Join(initialCluster, ",")
+		p.cfg.ClusterState = embed.ClusterStateFlagExisting
+		p.clusterSet.Store(true)
+		return nil
+	})
+
+	if err := p.Start(); err != nil {
+		return fmt.Errorf("starting etcd server: %w", err)
+	}
+	log.Printf("!!! started etcd server, now promoting to voter...\n")
+
+	// Promote learner -> voter, blocking until it sticks. etcd rejects promotion
+	// of a learner that isn't ~caught up (ErrLearnerNotReady); without a seed the
+	// node catches up over the live log, so promotion only succeeds once it has.
+	if err := retryUntil(ctx, time.Second, 5*time.Second, "promoting to voter", func(actx context.Context) error {
+		_, err := cli.MemberPromote(actx, member.Member.ID)
+		return err
+	}); err != nil {
+		return err
+	}
+	log.Printf("!!! promoted to voter\n")
+
+	// Block until this just-promoted voter has caught up to the leader before we
+	// release the join lock. We compare networked Status (not the loopback Self
+	// client, which reads a path that can transiently panic): our RaftAppliedIndex
+	// reaching the leader's RaftIndex (committed) means the leader has been
+	// successfully replicating to us — a leader-side "this member is active"
+	// signal, which is what the next joiner's reconfig health check needs.
+	// Holding the lock across this keeps the next joiner out of the unhealthy
+	// window. The retry backstops the residual leader-side settle time.
+	selfClientURL := advertiseClientUrls[0].String()
+	if err := retryUntil(ctx, time.Second, 5*time.Second, "confirming voter caught up", func(actx context.Context) error {
+		self, err := cli.Status(actx, selfClientURL)
+		if err != nil {
+			return err
+		}
+		if self.IsLearner {
+			return fmt.Errorf("still a learner")
+		}
+		if self.Leader == 0 {
+			return fmt.Errorf("no leader in contact yet")
+		}
+
+		// Resolve the leader's client URL from the membership, then read its
+		// committed index to compare against ours.
+		ml, err := cli.MemberList(actx)
+		if err != nil {
+			return err
+		}
+		var leaderURL string
+		for _, m := range ml.Members {
+			if m.ID == self.Leader && len(m.ClientURLs) > 0 {
+				leaderURL = m.ClientURLs[0]
+				break
+			}
+		}
+		if leaderURL == "" {
+			return fmt.Errorf("leader %x has no client URL yet", self.Leader)
+		}
+		leader, err := cli.Status(actx, leaderURL)
+		if err != nil {
+			return err
+		}
+		if self.RaftAppliedIndex < leader.RaftIndex {
+			return fmt.Errorf("catching up: applied %d < leader committed %d", self.RaftAppliedIndex, leader.RaftIndex)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	log.Printf("!!! voter caught up to leader, cluster healthy\n")
+
+	members, err = cli.MemberList(ctx)
+	if err != nil {
+		return fmt.Errorf("listing members: %w", err)
+	}
+	log.Printf("!!! final member list:")
+	for _, m := range members.Members {
+		log.Printf("  %x %s learner=%t peers=%v", m.ID, m.Name, m.IsLearner, m.PeerURLs)
+	}
+
+	return nil
+}
+
+// retryUntil calls fn every interval until it returns nil, or ctx is done (then
+// it returns ctx's error wrapped with what). Each attempt gets its own context
+// bounded to perAttempt and derived from ctx, so a single blocked RPC can't
+// stall the loop — it's cancelled and retried.
+func retryUntil(ctx context.Context, interval, perAttempt time.Duration, what string, fn func(context.Context) error) error {
+	for {
+		actx, cancel := context.WithTimeout(ctx, perAttempt)
+		err := fn(actx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		log.Printf("!!! %s: %v; retrying in %s\n", what, err, interval)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s: %w", what, ctx.Err())
+		case <-time.After(interval):
+		}
+	}
 }
 
 // sanitizePeers normalizes the caller-supplied list of peer (raft) URLs into a

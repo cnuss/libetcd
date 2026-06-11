@@ -35,21 +35,28 @@ serving peer A                         reading peer B
 ```
 
 - **Serve side — `Handler`.** Wraps the peer (raft) `http.Handler`. On the
-  `/raft/stream` path only, it rewrites the stream's success status `200 → 206`.
-  Scoped to that path because the stream handler is the *only* `200` on the peer
-  mux — pipeline writes `204`, and `/members`, `/version`, lease, etc. return
-  real `200 + body` that must pass through untouched. The wrapper preserves
-  `http.Flusher` (rafthttp's `streamHandler` type-asserts the `ResponseWriter`
-  to `Flusher` and would panic without it).
+  `/raft/stream` path only, **and only when the dialer negotiated it** (the
+  `X-Libetcd-Stream: 206` request header), it rewrites the stream's success
+  status `200 → 206`. Scoped to that path because the stream handler is the
+  *only* `200` on the peer mux — pipeline writes `204`, and `/members`,
+  `/version`, lease, etc. return real `200 + body` that must pass through
+  untouched. The wrapper preserves `http.Flusher` (rafthttp's `streamHandler`
+  type-asserts the `ResponseWriter` to `Flusher` and would panic without it).
 
 - **Dial side — `Intercept`.** etcd's `streamReader.dial` switches only on
-  `http.StatusOK`; a `206` falls through and is rejected, so the stream never
-  establishes. `Intercept` wraps the reader's `RoundTripper` with `accept206`,
-  which rewrites `206 → 200` the instant the response arrives — *after* it
-  crossed the wire as `206`, *before* the stock reader inspects it.
+  `http.StatusOK`; a `206` falls into its *unhandled status* branch. `Intercept`
+  wraps the reader's `RoundTripper` with `accept206`, which stamps the
+  negotiation header on stream dials and rewrites the `206` that comes back to
+  `200` the instant the response arrives — *after* it crossed the wire as `206`,
+  *before* the stock reader inspects it.
 
-Both halves are required. Serve-side `206` alone breaks a stock reader; dial-side
-alone never sees a `206` to rewrite.
+Both halves are required, and the negotiation is what makes the pairing safe:
+a `206` served to a dialer that can't translate it is **fatal, not rejected**.
+`streamReader.dial` handles an unexpected status by draining the response body
+(`httputil.GracefulClose` → `io.Copy(io.Discard, body)`) — and a raft stream
+body never ends, so that reader goroutine hangs forever and the peer link never
+forms. With negotiation, an un-intercepted dialer (stock etcd, or a race — see
+Timing) simply gets a stock `200` stream.
 
 ## Why the dial side needs reflection (and `unsafe`)
 
@@ -91,10 +98,18 @@ unsafe.Pointer(field.UnsafeAddr())).Elem()`) lifts reflect's read/set ban.
 ### Timing
 
 `Intercept` runs in `EtcdImpl.Server()` — **after** `NewServer` mints `streamRt`,
-**before** `Start` fires the raft loop and peers dial. No reader races the swap.
-(For a join, `NewServer`'s own `AddPeer` may start a reader that makes a first
-dial against the unwrapped transport; it's rejected, retried ~100ms later against
-the wrapped one, and self-heals — raft tolerates a few rejected dials.)
+**before** `Start` fires the raft loop. But for a node joining an existing
+cluster, `NewServer` itself calls `AddPeer` for every existing member, starting
+streamReaders that dial **immediately — racing the swap**. A reader whose first
+dial wins the race goes out on the unwrapped transport with no negotiation
+header, so the serving peer answers a stock `200` and the stream establishes
+normally; once the swap lands, every later (re-)dial negotiates `206`.
+
+This race is exactly why the rewrite is negotiated. An earlier revision served
+`206` unconditionally and assumed a pre-swap dial would be "rejected and
+retried"; in fact the reader hard-hung draining the endless `206` body (see
+above), wedging the joiner's peer link and hanging `Join` at `Start` —
+intermittently, since logging or scheduling could let the swap win.
 
 ### What the swap costs
 

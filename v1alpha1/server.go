@@ -100,6 +100,7 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	if srv == nil {
 		return nil
 	}
+	
 	b.mu.Lock()
 	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
