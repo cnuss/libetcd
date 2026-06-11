@@ -10,12 +10,14 @@ import (
 
 // TestSanitizePeers covers the normalization From applies to a caller's peer
 // URLs: trim, drop-empty, default-scheme, dedup, the preserved first-seen
-// order, and silently dropping anything that doesn't parse.
+// order, and the reporting of dropped unparseable entries (empties and dups
+// are removed without being reported).
 func TestSanitizePeers(t *testing.T) {
 	cases := []struct {
-		name string
-		in   []string
-		want []string
+		name        string
+		in          []string
+		want        []string
+		wantDropped []string
 	}{
 		{
 			name: "bare host:port gets http scheme",
@@ -48,22 +50,27 @@ func TestSanitizePeers(t *testing.T) {
 			want: []string{"https://a:2380"},
 		},
 		{
-			name: "drops bad entries, keeps the good ones",
-			in:   []string{"ftp://a:2380", "http://", "://2380", "http://good:2380"},
-			want: []string{"http://good:2380"},
+			name:        "drops bad entries, keeps the good ones",
+			in:          []string{"ftp://a:2380", "http://", "://2380", "http://good:2380"},
+			want:        []string{"http://good:2380"},
+			wantDropped: []string{"ftp://a:2380", "http://", "://2380"},
 		},
 		{
-			name: "all-bad-or-empty yields empty",
-			in:   []string{"", "  ", "ftp://x:2380", "http://"},
-			want: nil,
+			name:        "all-bad-or-empty yields empty",
+			in:          []string{"", "  ", "ftp://x:2380", "http://"},
+			want:        nil,
+			wantDropped: []string{"ftp://x:2380", "http://"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizePeers(tc.in)
+			got, dropped := sanitizePeers(tc.in)
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("sanitizePeers(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if !slices.Equal(dropped, tc.wantDropped) {
+				t.Fatalf("sanitizePeers(%q) dropped %q, want %q", tc.in, dropped, tc.wantDropped)
 			}
 		})
 	}
