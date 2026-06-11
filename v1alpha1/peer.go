@@ -114,6 +114,32 @@ func (p *peerJoiner) Join() (err error) {
 		}
 	}()
 
+	// Fail fast on local misconfiguration before touching the remote cluster:
+	// a join mutates the target's membership, so a doomed attempt must not get
+	// that far.
+	//
+	// A latched builder error (e.g. a bad WithLog level) makes every later
+	// mutate a no-op: ensureListeners would leak its freshly bound listeners,
+	// and the member-add would register embed's default localhost advertise URL
+	// with the live cluster, only for Start to surface the cause after the
+	// damage is done.
+	if cause := context.Cause(p.ctx); cause != nil {
+		return fmt.Errorf("join: configuration error: %w", cause)
+	}
+	// A server minted before Join (any client accessor — Self/Leader/Voters/
+	// Peers — mints it) was built from the bootstrap config; Join's later
+	// InitialCluster/ClusterState mutations can't reach the cached server, so
+	// it would boot a divergent single-node cluster and the join would fail
+	// only after the full promote timeout, churning remote membership on the
+	// way. Best-effort check: a concurrent accessor can still race past it,
+	// but the sequential misuse is caught with a clear error.
+	p.mu.Lock()
+	minted := p.srv != nil
+	p.mu.Unlock()
+	if minted {
+		return errors.New("join: server already minted (a client accessor like Self/Leader/Voters/Peers was called before Join); call Join first, or build a fresh From(...) handle")
+	}
+
 	logger := p.Logger()
 	if err := p.ensureListeners(); err != nil {
 		return fmt.Errorf("ensuring listeners: %w", err)
@@ -138,6 +164,16 @@ func (p *peerJoiner) Join() (err error) {
 	peers := sanitizePeers(p.peers)
 	if len(peers) == 0 {
 		return fmt.Errorf("no valid peer URLs: %v", p.peers)
+	}
+
+	// A loopback advertise URL is unreachable from any other machine. When the
+	// target peers are non-loopback (a remote cluster), the join is
+	// structurally doomed: the cluster would accept the member-add but could
+	// never dial us back, the learner would never sync, and the join would die
+	// at the promote timeout — leaving rollback churn behind. Catch it before
+	// the member-add. Same-host joins (loopback on both sides) pass.
+	if loopbackOnly(advertisePeerUrls) && !allLoopbackPeers(peers) {
+		return fmt.Errorf("join: advertise peer URLs %v are all loopback but target peers %v are not; a remote cluster can never dial back — serve a routable address via WithPeerServing", urlsToEndpoints(advertisePeerUrls), peers)
 	}
 
 	endpoints, err := clientEndpointsFromPeers(ctx, peers)
@@ -567,6 +603,41 @@ func retryUntil(ctx context.Context, interval, perAttempt time.Duration, what st
 		case <-time.After(interval):
 		}
 	}
+}
+
+// loopbackOnly reports whether every URL's host is a loopback address
+// (localhost, 127.0.0.0/8, ::1). Empty input is not "only loopback".
+func loopbackOnly(urls []url.URL) bool {
+	for _, u := range urls {
+		if !isLoopbackHost(u.Hostname()) {
+			return false
+		}
+	}
+	return len(urls) > 0
+}
+
+// allLoopbackPeers reports whether every peer URL targets a loopback host —
+// the same-host multi-process case, where a loopback advertise URL works.
+func allLoopbackPeers(peers []string) bool {
+	for _, s := range peers {
+		u, err := url.Parse(s)
+		if err != nil || !isLoopbackHost(u.Hostname()) {
+			return false
+		}
+	}
+	return len(peers) > 0
+}
+
+// isLoopbackHost reports whether host is a loopback name or address. Non-IP
+// hostnames other than "localhost" count as non-loopback without resolving
+// them: a wrong answer only changes when a doomed join fails, and resolving
+// would put DNS on the join path.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // sanitizePeers normalizes the caller-supplied list of peer (raft) URLs into a

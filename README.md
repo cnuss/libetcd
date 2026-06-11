@@ -70,6 +70,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 
 	"github.com/cnuss/libetcd"
 )
@@ -83,7 +84,17 @@ func main() {
 	// or another node's Peers().
 	peers := []string{"10.0.0.1:2380", "http://10.0.0.2:2380"}
 
-	node := libetcd.From(peers...).WithContext(ctx)
+	// A remote cluster must be able to dial this node back: the peer
+	// listener's address is what Join advertises. Without WithPeerServing the
+	// node auto-binds a loopback port, which only works when the whole
+	// cluster runs on this host — Join rejects that combination for remote
+	// peers.
+	lis, err := net.Listen("tcp", "10.0.0.3:2380")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	node := libetcd.From(peers...).WithPeerServing(lis, nil).WithContext(ctx)
 	if err := node.Join(); err != nil {
 		log.Fatal(err)
 	}
