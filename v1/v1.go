@@ -95,6 +95,15 @@ type Builder[T any] interface {
 	// WithName sets the node (member) name. Default: a unique generated name.
 	WithName(name string) T
 	// WithDir sets the data directory. Default: a fresh temp directory.
+	//
+	// A dir that already holds a member's data restarts that member: the node
+	// boots from the dir's WAL, which carries its identity (member ID, cluster
+	// ID, membership) — the dir is the only thing a restart must reuse from
+	// the previous incarnation. On a multi-member cluster the restarted node
+	// must also advertise the peer URL the membership registered for it, since
+	// the other members dial that URL: bind a listener on the same address and
+	// pass it via WithPeerServing (and pin the client address the same way if
+	// anything dials the member's registered client URL).
 	WithDir(dir string) T
 	// WithClusterToken sets the initial-cluster token. Default "etcd-cluster"
 	// (embed's default).
@@ -137,11 +146,24 @@ type Builder[T any] interface {
 	WithPeerServing(lis net.Listener, srv *http.Server) T
 }
 
+// Executor is the lifecycle of one node incarnation. A handle is single-use:
+// Start and Stop each run at most once, so a "restart" is always a brand-new
+// builder constructed over the previous incarnation's data dir (see WithDir
+// for what else a restart must hold constant).
 type Executor interface {
-	// Start mints + starts a fresh single-member node (auto-binding listeners and
-	// serving the HTTP servers).
+	// Start mints + starts the node (auto-binding listeners and serving the
+	// HTTP servers), at most once per handle. Over an empty (or unset) data dir
+	// it bootstraps a fresh single-member cluster; over a dir that already
+	// holds a member's data it boots that member from its WAL — a restart —
+	// and etcd then ignores the builder's name, initial-cluster string,
+	// cluster token, and cluster state (the on-disk identity wins; the name
+	// and client URLs are republished from the new config). Start blocks until
+	// the node can serve, which for a restarted multi-member cluster requires
+	// quorum: restart the members concurrently, not serially.
 	Start() error
-	// Stop shuts the node down, best-effort and idempotent.
+	// Stop shuts the node down, best-effort and idempotent. When Stop returns,
+	// the data dir is released (backend and WAL closed), so a fresh builder
+	// can be constructed over it.
 	Stop() error
 }
 
@@ -167,6 +189,11 @@ type EtcdPeer interface {
 	// and promotes itself to a voting member once caught up. It blocks until the
 	// node is voting or the bounding context elapses; on failure after the
 	// member-add it rolls the half-joined member back out of the cluster.
+	//
+	// Join is for first-time membership only. Restarting a member that already
+	// joined is Start's job: construct a fresh New() builder over its data dir
+	// (it boots from the WAL and rejoins raft; see Executor and WithDir) —
+	// joining again would collide with the member the cluster already has.
 	//
 	// The join lock writes transient coordination keys under the
 	// "libetcd/lock/" prefix in the target cluster's keyspace; they are visible

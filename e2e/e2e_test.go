@@ -69,6 +69,8 @@ func TestExamples(t *testing.T) {
 		{"multi-node", "greeting from node 2: hello world"},
 		{"async-join", "all 3 puts survived"},
 		{"load-join", "load-join success: verified"},
+		{"dir-handoff", "dir-handoff success: verified 16/16 keys"},
+		{"restart-cycle", "restart-cycle success: verified 24 keys on 2 members across 2 restart cycles"},
 	}
 	// Examples run serially: each boots a real embedded node binding loopback
 	// ports, and concurrent runs contend for ports and CPU.

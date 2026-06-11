@@ -13,6 +13,12 @@ import (
 // via WithClientServing/WithPeerServing are auto-bound to a free loopback
 // port. It returns the latched configuration error if the server can't be
 // minted.
+//
+// Over a data dir that already holds a member's data, the minted server boots
+// that member from its WAL — a restart, with the config's name/initial-cluster/
+// cluster-state ignored in favor of the on-disk identity. Start/Stop are
+// once-guarded, so a restart is always a fresh builder over the old dir; see
+// the v1.Executor contract.
 func (b *EtcdImpl) Start() error {
 	if err := b.ensureListeners(); err != nil {
 		return err
@@ -82,15 +88,32 @@ func (b *EtcdImpl) ensureListeners() error {
 	return nil
 }
 
-// Stop shuts down the HTTP servers and stops the etcd server, at most once and
+// Stop stops the etcd server and shuts down the HTTP servers, at most once and
 // best-effort, returning the joined error. A started server is HardStopped; an
 // only-minted one is Cleaned up (its backend released without a run loop).
+// Stop returning means the data dir is released (backend and WAL closed), so a
+// fresh builder can be constructed over the same dir — see Start on restarts.
+//
+// The etcd server stops first, deliberately: on a multi-member cluster the
+// peer http.Server holds the other members' long-lived raft stream
+// connections, which only terminate when the raft transport stops (HardStop's
+// run-loop exit does that). Shutting the HTTP servers down first would wait
+// out the full shutdown timeout on those never-idle streams and report a
+// spurious "context deadline exceeded".
 func (b *EtcdImpl) Stop() error {
 	var errs []error
 	b.stopOnce.Do(func() {
 		b.mu.Lock()
 		ch, ph, srv := b.clientHTTP, b.peerHTTP, b.srv
 		b.mu.Unlock()
+
+		if srv != nil {
+			if b.started.Load() {
+				srv.HardStop()
+			} else {
+				srv.Cleanup()
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -102,13 +125,6 @@ func (b *EtcdImpl) Stop() error {
 		if ph != nil {
 			if err := ph.Shutdown(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("shutdown peer http: %w", err))
-			}
-		}
-		if srv != nil {
-			if b.started.Load() {
-				srv.HardStop()
-			} else {
-				srv.Cleanup()
 			}
 		}
 	})

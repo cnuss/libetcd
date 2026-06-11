@@ -88,6 +88,17 @@ func TestJoin(t *testing.T) {
 	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
 		t.Fatalf("node2 Get = %v, want value %q", resp.Kvs, "v")
 	}
+
+	// Both members must stop cleanly. Stop stops the etcd server before
+	// shutting down the HTTP servers; the old order waited out the HTTP
+	// shutdown timeout on the other member's live raft streams and returned a
+	// spurious "shutdown peer http: context deadline exceeded".
+	if err := e2.Stop(); err != nil {
+		t.Errorf("node2 Stop: %v", err)
+	}
+	if err := e1.Stop(); err != nil {
+		t.Errorf("node1 Stop: %v", err)
+	}
 }
 
 // httpGet fetches http://addr+path on the peer listener and returns the body.
