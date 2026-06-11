@@ -98,6 +98,8 @@ through a lock held in the target cluster, so several nodes (even in separate
 processes) can call it at once. Working examples:
 [`examples/multi-node/main.go`](./examples/multi-node/main.go) (one join),
 [`examples/async-join/main.go`](./examples/async-join/main.go) (three at once).
+[`examples/load-join/main.go`](./examples/load-join/main.go) (concurrent joins
+while sustained writes are in flight, then zero-loss verification).
 
 ## Layout
 
@@ -201,6 +203,7 @@ Self-contained programs in [`./examples`](./examples):
 | `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.              |
 | `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key.      |
 | `async-join`  | Grow a cluster with concurrent `From(...).Join()` calls; verify every joiner's write survives. |
+| `load-join`   | Run sustained writes while several peers join concurrently; then verify every acknowledged write survives on every member. |
 
 Run one locally:
 
@@ -208,6 +211,7 @@ Run one locally:
 make run single-node
 make run multi-node
 make run async-join
+make run load-join
 ```
 
 ## Testing
