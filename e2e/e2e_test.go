@@ -67,8 +67,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"single-node", "greeting: hello world"},
 		{"multi-node", "greeting from node 2: hello world"},
-		{"join-from-peers", "node 2 joined and read: hello from the cluster"},
-		{"load-test", "rtrips/s"},
+		{"async-join", "all 3 puts survived"},
 	}
 	// Examples run serially: each boots a real embedded node binding loopback
 	// ports, and concurrent runs contend for ports and CPU.

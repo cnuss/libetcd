@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net"
 	"time"
-
-	v1 "github.com/cnuss/libetcd/v1"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -61,13 +59,6 @@ func (b *EtcdImpl) Start() error {
 		}
 	})
 	return nil
-}
-
-// Join is not implemented. Joining an existing cluster is being consolidated
-// onto the single From(...).Join() path; this Executor entry point is going
-// away. See https://github.com/cnuss/libetcd/issues/36.
-func (b *EtcdImpl) Join(with v1.Client) error {
-	panic("not implemented")
 }
 
 // ensureListeners binds a free loopback listener for any side (client/peer) that

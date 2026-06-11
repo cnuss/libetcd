@@ -141,12 +141,6 @@ type Executor interface {
 	Start() error
 	// Stop shuts the node down, best-effort and idempotent.
 	Stop() error
-	// Join brings the node up as a member of an existing cluster, fully managed
-	// on the joiner side: given any current member (a Client), it adds itself as
-	// a learner, starts, catches up, and promotes itself to a voting member. It
-	// blocks until the node is a voting member (so reads work immediately) or the
-	// WithContext context / an internal deadline elapses.
-	Join(with Client) error
 }
 
 type Etcd interface {
@@ -159,14 +153,19 @@ type Etcd interface {
 // EtcdPeer is the join-only surface returned by From: a node configured to join
 // an existing cluster (reachable at a set of peer URLs) rather than to bootstrap
 // a fresh one. It exposes the Client accessors and the Builder setters (which
-// chain back to EtcdPeer), but not Start — the only lifecycle entry is Join.
+// chain back to EtcdPeer), but not Start — the lifecycle entries are Join and
+// Stop.
 type EtcdPeer interface {
 	Client
 	Builder[EtcdPeer]
 
 	// Join brings the node into the cluster at the configured peer URLs: it
-	// discovers a client endpoint from those peers, adds itself as a learner,
-	// seeds from a leader snapshot, and promotes itself to a voting member. It
-	// blocks until the node is voting or the bounding context elapses.
+	// discovers a client endpoint from those peers, takes a cluster-wide join
+	// lock so concurrent joiners serialize, adds itself as a learner, starts,
+	// and promotes itself to a voting member once caught up. It blocks until the
+	// node is voting or the bounding context elapses; on failure after the
+	// member-add it rolls the half-joined member back out of the cluster.
 	Join() error
+	// Stop shuts the node down, best-effort and idempotent.
+	Stop() error
 }

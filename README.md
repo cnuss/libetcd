@@ -93,7 +93,8 @@ func main() {
 }
 ```
 
-(Full source: [`examples/join-from-peers/main.go`](./examples/join-from-peers/main.go).)
+(Full source: [`examples/multi-node/main.go`](./examples/multi-node/main.go); for
+concurrent joins, [`examples/async-join/main.go`](./examples/async-join/main.go).)
 
 ## Layout
 
@@ -144,7 +145,6 @@ type Builder[T any] interface {
 type Executor interface {
     Start() error                      // mint + start; auto-binds any unset listener; serves HTTP
     Stop() error                       // best-effort, idempotent shutdown
-    Join(with Client) error            // join an existing cluster (managed: learner -> promote)
 }
 
 // Server — server-side handles, minted lazily and cached.
@@ -165,20 +165,23 @@ type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
     Voters() *clientv3.Client  // networked client (dials voting members)
-    Peers() Peers              // members' peer (raft) URLs; feed to From
+    Peers() []string           // members' peer (raft) URLs; feed to From
 }
 ```
 
 `EtcdPeer` (from `From`) is a join-only node: the `Client` accessors and `Builder`
-setters (chaining back to `EtcdPeer`), plus `Join` — but no `Start`.
+setters (chaining back to `EtcdPeer`), plus `Join`/`Stop` — but no `Start`.
+`From(...).Join()` is the only way to join an existing cluster.
 
 ```go
 // EtcdPeer — join an existing cluster from a list of peer URLs.
 type EtcdPeer interface {
     Client            // Self / Leader / Voters / Peers
     Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
-    Join() error      // discover a client endpoint via the peers' /members, add as
-                      // learner, seed from a leader snapshot, promote to voting
+    Join() error      // discover a client endpoint via the peers' /members, take the
+                      // cluster join lock, add as learner, start, promote to voting;
+                      // rolls back the half-joined member on failure
+    Stop() error      // best-effort, idempotent shutdown
 }
 ```
 
@@ -190,20 +193,18 @@ to `http`, de-duplicates, and silently drops any it can't parse.
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example           | Demonstrates                                                     |
-| ----------------- | --------------------------------------------------------------- |
-| `single-node`     | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
-| `multi-node`      | Bring up a node, `Join` a second to it, read the replicated key. |
-| `join-from-peers` | Join a node to a cluster from peer URLs via `From(...).Join()`.  |
-| `load-test`       | Grow a cluster under read/write load for 30s; print throughput + latency. |
+| Example       | Demonstrates                                                          |
+| ------------- | --------------------------------------------------------------------- |
+| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.              |
+| `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key.      |
+| `async-join`  | Grow a cluster with concurrent `From(...).Join()` calls; verify every joiner's write survives. |
 
 Run one locally:
 
 ```sh
 make run single-node
 make run multi-node
-make run join-from-peers
-make run load-test
+make run async-join
 ```
 
 ## Testing
