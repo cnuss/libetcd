@@ -55,8 +55,9 @@ a `206` served to a dialer that can't translate it is **fatal, not rejected**.
 `streamReader.dial` handles an unexpected status by draining the response body
 (`httputil.GracefulClose` → `io.Copy(io.Discard, body)`) — and a raft stream
 body never ends, so that reader goroutine hangs forever and the peer link never
-forms. With negotiation, an un-intercepted dialer (stock etcd, or a race — see
-Timing) simply gets a stock `200` stream.
+forms. With negotiation, an un-intercepted dialer (stock etcd, or a libetcd
+node whose `Intercept` fail-softed on a layout change — see Timing) simply gets
+a stock `200` stream.
 
 ## Why the dial side needs reflection (and `unsafe`)
 
@@ -98,18 +99,48 @@ unsafe.Pointer(field.UnsafeAddr())).Elem()`) lifts reflect's read/set ban.
 ### Timing
 
 `Intercept` runs in `EtcdImpl.Server()` — **after** `NewServer` mints `streamRt`,
-**before** `Start` fires the raft loop. But for a node joining an existing
-cluster, `NewServer` itself calls `AddPeer` for every existing member, starting
-streamReaders that dial **immediately — racing the swap**. A reader whose first
-dial wins the race goes out on the unwrapped transport with no negotiation
-header, so the serving peer answers a stock `200` and the stream establishes
-normally; once the swap lands, every later (re-)dial negotiates `206`.
+**before** `Start` fires the raft and apply loops. But for a node joining an
+existing cluster, `NewServer` itself calls `AddPeer` for every existing member,
+and `AddPeer → startPeer → streamReader.start() → go cr.run()` — so reader
+goroutines are already live and dialing when `Intercept` runs, and each dial
+does a plain, unsynchronized read of the two-word `streamRt` interface field
+(`cr.tr.streamRt.RoundTrip`, rafthttp `stream.go`). A bare `field.Set` here
+would be a Go-memory-model **data race** against those reads (issue #52): the
+Transport's mutex covers only its remote/peer maps, and the `Pausable` test
+hooks (`peer.Pause → streamReader.pause`) only gate message delivery inside
+`decodeLoop` — a paused reader keeps dialing, so Pause/Resume can't order the
+swap either.
 
-This race is exactly why the rewrite is negotiated. An earlier revision served
-`206` unconditionally and assumed a pre-swap dial would be "rejected and
-retried"; in fact the reader hard-hung draining the endless `206` body (see
-above), wedging the joiner's peer link and hanging `Join` at `Start` —
-intermittently, since logging or scheduling could let the swap win.
+So `Intercept` brackets the swap with the **exported peer lifecycle**, which
+does give a happens-before edge in each direction:
+
+1. **Quiesce.** Capture the members currently held as transport peers, then
+   `tr.RemoveAllPeers()`. That runs `peer.stop() → streamReader.stop()`, which
+   blocks on `<-cr.done`, and `run()` does `close(cr.done)` before returning —
+   the channel close/receive pair orders every read those goroutines made
+   *before* the swap. The streamReader dial is the only reader of `streamRt`
+   after `Transport.Start` (the probers capture their own copy at `Start`), and
+   every streamReader belongs to a transport peer, so after this step **no
+   goroutine that can read `streamRt` exists**.
+2. **Swap.** The plain `field.Set` is now exclusive, hence race-free.
+3. **Restart.** `tr.AddPeer` for the captured members starts fresh
+   streamReaders via a `go` statement; goroutine creation happens-after the
+   swap, so every future dial observes the wrapped `RoundTripper`.
+
+The captured set is exact at that instant: `NewServer`'s bootstrap added peers
+precisely from `cluster.Members()` (minus self), and nothing else mutates the
+peer map until `EtcdServer.Start` launches the raft/apply loops — sequenced
+after `Intercept`. Single-node has no peers, so the bracket is a no-op there.
+Readers that had already established a (negotiation-less, stock `200`) stream
+are torn down and redial with the header — routine rafthttp churn that raft
+absorbs.
+
+The negotiation header remains load-bearing even with the race gone. An
+earlier revision served `206` unconditionally and assumed a non-translating
+dialer would be "rejected and retried"; in fact the reader hard-hung draining
+the endless `206` body (see above), wedging the joiner's peer link and hanging
+`Join` at `Start`. Negotiation keeps stock etcd peers — and any libetcd node
+whose `Intercept` fail-softed on a layout change — on plain `200` streams.
 
 ### What the swap costs
 

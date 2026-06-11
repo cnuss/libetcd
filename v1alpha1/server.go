@@ -54,7 +54,9 @@ func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 		}
 		// Wrap the raft stream RoundTripper so the serve-side 206 is accepted by
 		// the stock reader (issue #8). Done here — after NewServer mints it,
-		// before Start dials — see stream.Intercept.
+		// before Start fires the raft/apply loops. On the join path NewServer
+		// has already started reader goroutines, so Intercept quiesces them
+		// around the swap (issue #52) — see stream.Intercept.
 		stream.Intercept(srv, lg)
 		b.srv = srv
 	})

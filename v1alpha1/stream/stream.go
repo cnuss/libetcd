@@ -23,6 +23,7 @@ import (
 	"unsafe"
 
 	"go.etcd.io/etcd/server/v3/etcdserver"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.uber.org/zap"
 )
@@ -30,8 +31,8 @@ import (
 // acceptHeader/acceptValue negotiate the 206 rewrite. The dial side (accept206)
 // stamps the header on stream dials it can translate back; the serve side
 // (Handler) rewrites 200 → 206 only for requests carrying it. A dialer without
-// the interceptor — stock etcd, or a libetcd node whose reader fires its first
-// dial before Intercept's swap lands — therefore gets a stock 200 stream
+// the interceptor — stock etcd, or a libetcd node whose Intercept fail-softed
+// on an etcd layout change — therefore gets a stock 200 stream
 // instead of a 206 it would fatally mishandle: etcd's streamReader.dial treats
 // 206 as an unhandled status and drains the response body via
 // httputil.GracefulClose, and a raft stream body never ends, so that reader
@@ -110,16 +111,54 @@ func (s accept206) RoundTrip(req *http.Request) (*http.Response, error) {
 //	*EtcdServer.r (raftNode) → .raftNodeConfig.transport (*rafthttp.Transport) → .streamRt
 //
 // Every hop is unexported; unsafe lifts reflect's read/set ban. It must run after
-// NewServer (so streamRt exists) and before the raft loop dials peers. The single
-// concrete-type assert on streamRt upstream (Transport.Stop's CloseIdleConnections)
-// already ran in Transport.Start before this swap, so wrapping it only forgoes
-// closing idle stream conns at Stop, which teardown reclaims anyway.
+// NewServer (so streamRt exists) and before EtcdServer.Start fires the raft and
+// apply loops. The single concrete-type assert on streamRt upstream
+// (Transport.Stop's CloseIdleConnections) already ran in Transport.Start before
+// this swap, so wrapping it only forgoes closing idle stream conns at Stop,
+// which teardown reclaims anyway.
+//
+// # Why the swap is bracketed by RemoveAllPeers / AddPeer (issue #52)
+//
+// On the join path, NewServer itself runs AddPeer for every existing member,
+// and AddPeer → startPeer → streamReader.start() → `go cr.run()` — so reader
+// goroutines are live and dialing before Intercept runs, and each dial does a
+// plain, unsynchronized read of the two-word interface field
+// (cr.tr.streamRt.RoundTrip, etcd rafthttp/stream.go). A bare field.Set here
+// would be a Go-memory-model data race against those reads. The Transport's
+// mutex guards only its remote/peer maps, and Pausable (peer.Pause →
+// streamReader.pause) is no help: paused only gates message delivery inside
+// decodeLoop, not the dial loop, so a paused reader keeps dialing.
+//
+// The streamReader dial path is the *only* reader of streamRt after
+// Transport.Start (the probers capture their own copy at Start; Transport.Stop
+// runs at teardown, after Start, with real synchronization in between), and
+// every streamReader belongs to a peer in the Transport's peer map. So the
+// exported peer lifecycle gives us a sound, fork-free bracket:
+//
+//  1. Quiesce: tr.RemoveAllPeers() → peer.stop() → streamReader.stop(), which
+//     blocks on <-cr.done; run() does close(cr.done) before returning. The
+//     channel close/receive pair means everything those goroutines did —
+//     including every read of streamRt — happens-before RemoveAllPeers returns.
+//     After it, no goroutine that can read streamRt exists.
+//  2. Swap: the plain field.Set is now exclusive, hence race-free.
+//  3. Restart: tr.AddPeer for the same members starts fresh readers via a `go`
+//     statement, and goroutine creation happens-after the swap, so every future
+//     dial observes the wrapped RoundTripper — no unsynchronized publication.
+//
+// The captured member set is exact at this instant: NewServer's bootstrap added
+// peers precisely from cluster.Members() (minus self), and nothing else can
+// mutate the peer map until EtcdServer.Start launches the raft/apply loops —
+// which is sequenced after Intercept in EtcdImpl.Server(). Single-node Start has
+// no peers, so the bracket is a no-op there. Readers that had already
+// established a (negotiation-less, stock 200) stream are torn down and redial
+// with the X-Libetcd-Stream header; rafthttp redials are routine and raft
+// tolerates the transient.
 //
 // On any layout change it logs and leaves the node unwrapped rather than
 // panicking: single-node is unaffected (no peer dials) and a multi-node join
 // would then fail to sync — which the warning, and the layout-guard test, flag.
 func Intercept(srv *etcdserver.EtcdServer, lg *zap.Logger) {
-	field, inner, ok := streamRtField(srv)
+	field, inner, tr, ok := streamRtField(srv)
 	if !ok {
 		if lg != nil {
 			lg.Warn("libetcd: raft stream 206 intercept skipped; multi-node joins may not sync",
@@ -130,13 +169,33 @@ func Intercept(srv *etcdserver.EtcdServer, lg *zap.Logger) {
 	if _, done := inner.(accept206); done {
 		return // idempotent
 	}
+
+	// Quiesce (step 1): capture the members currently held as transport peers,
+	// then stop them all. RemoveAllPeers blocks until every streamReader
+	// goroutine has exited, establishing happens-before for the swap below.
+	var readd []*membership.Member
+	for _, m := range srv.Cluster().Members() {
+		if m.ID == srv.MemberID() || tr.Get(m.ID) == nil {
+			continue
+		}
+		readd = append(readd, m)
+	}
+	tr.RemoveAllPeers()
+
+	// Swap (step 2): no reader of streamRt exists; the plain write is exclusive.
 	field.Set(reflect.ValueOf(accept206{inner}))
+
+	// Restart (step 3): fresh streamReaders start via `go` after the swap, so
+	// goroutine-creation ordering publishes the wrapped RoundTripper to them.
+	for _, m := range readd {
+		tr.AddPeer(m.ID, m.PeerURLs)
+	}
 }
 
 // Intercepted reports whether srv's raft stream RoundTripper is currently wrapped
 // by Intercept. It is the read-only predicate behind the layout-guard test.
 func Intercepted(srv *etcdserver.EtcdServer) bool {
-	_, inner, ok := streamRtField(srv)
+	_, inner, _, ok := streamRtField(srv)
 	if !ok {
 		return false
 	}
@@ -144,10 +203,11 @@ func Intercepted(srv *etcdserver.EtcdServer) bool {
 	return done
 }
 
-// streamRtField walks *EtcdServer to the settable streamRt field and its current
-// value, via unsafe (the whole path is unexported). On any layout mismatch it
-// recovers and reports ok=false rather than panicking.
-func streamRtField(srv *etcdserver.EtcdServer) (field reflect.Value, inner http.RoundTripper, ok bool) {
+// streamRtField walks *EtcdServer to the settable streamRt field, its current
+// value, and the owning *rafthttp.Transport, via unsafe (the whole path is
+// unexported). On any layout mismatch it recovers and reports ok=false rather
+// than panicking.
+func streamRtField(srv *etcdserver.EtcdServer) (field reflect.Value, inner http.RoundTripper, tr *rafthttp.Transport, ok bool) {
 	defer func() { _ = recover() }() // layout changed → zero values, ok=false
 
 	transport := unexportedField(reflect.ValueOf(srv).Elem().FieldByName("r"), "transport")
@@ -166,7 +226,7 @@ func streamRtField(srv *etcdserver.EtcdServer) (field reflect.Value, inner http.
 	if !isRT || in == nil {
 		return
 	}
-	return f, in, true
+	return f, in, rt, true
 }
 
 // unexportedField returns an addressable, settable reflect.Value for the named
