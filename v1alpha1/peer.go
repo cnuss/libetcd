@@ -9,11 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
@@ -21,6 +24,7 @@ import (
 
 	v1 "github.com/cnuss/libetcd/v1"
 	"github.com/cnuss/libetcd/v1alpha1/lock"
+	"github.com/cnuss/libetcd/v1alpha1/snapshot"
 )
 
 // peerJoiner is the join-only builder returned by From. It wraps a concrete
@@ -223,6 +227,10 @@ func (p *peerJoiner) Join() (err error) {
 		return nil
 	})
 
+	if err = p.seedFromLeader(ctx, cli, memberID, name); err != nil {
+		return fmt.Errorf("seeding from leader snapshot: %w", err)
+	}
+
 	if err = p.Start(); err != nil {
 		return fmt.Errorf("starting etcd server: %w", err)
 	}
@@ -230,8 +238,9 @@ func (p *peerJoiner) Join() (err error) {
 	logger.Info("join: server started, promoting to voter")
 
 	// Promote learner -> voter, blocking until it sticks. etcd rejects promotion
-	// of a learner that isn't ~caught up (ErrLearnerNotReady); without a seed the
-	// node catches up over the live log, so promotion only succeeds once it has.
+	// of a learner that isn't ~caught up (ErrLearnerNotReady). With the join seed,
+	// the node boots already applied at the leader's index, so promotion should
+	// succeed promptly; retries cover residual leader-side settle time only.
 	// A member-not-found is permanent (someone removed us): fail, don't spin.
 	if err = retryUntil(ctx, time.Second, 5*time.Second, "promoting to voter", func(actx context.Context) error {
 		_, perr := cli.MemberPromote(actx, memberID)
@@ -296,6 +305,84 @@ func (p *peerJoiner) Join() (err error) {
 
 	logger.Info("join: complete, voter caught up", zap.String("member-id", fmt.Sprintf("%x", memberID)))
 	return nil
+}
+
+// seedFromLeader pulls a point-in-time db snapshot from the cluster and restores
+// it into this node's data directory, pre-seeded with the leader-assigned member
+// ID (selfID), the live cluster ID, and the full membership (learner status
+// preserved). The seeded node boots as a follower already applied to the
+// snapshot's raft index, so the leader replicates forward over the log and never
+// sends a raft snapshot — applying one panics the embedded host on Windows
+// (see v1alpha1/snapshot/snapshot.md). It must run after the learner-add (so
+// selfID and the membership are known) and before Start.
+func (p *peerJoiner) seedFromLeader(ctx context.Context, cli *clientv3.Client, selfID uint64, selfName string) error {
+	p.mu.Lock()
+	lg := p.cfg.GetLogger()
+	dir := p.cfg.Dir
+	p.mu.Unlock()
+
+	// A concrete data directory for the restore target. Restore requires it
+	// empty; if the caller supplied a dir that already has data (a restart,
+	// not a fresh join), skip seeding — etcd will boot from what's there.
+	if dir == "" {
+		d, err := os.MkdirTemp("", "libetcd-")
+		if err != nil {
+			return fmt.Errorf("data dir: %w", err)
+		}
+		dir = d
+		p.mutate(func() error {
+			p.cfg.Dir = dir
+			return nil
+		})
+	} else if fileutil.Exist(dir) && !fileutil.DirEmpty(dir) {
+		return nil
+	}
+
+	// Full membership (including this node, still a learner) and the cluster ID,
+	// taken verbatim from the leader so the seed agrees on every ID.
+	ml, err := cli.MemberList(ctx)
+	if err != nil {
+		return fmt.Errorf("member list: %w", err)
+	}
+	members := make([]snapshot.MemberInfo, 0, len(ml.Members))
+	for _, m := range ml.Members {
+		name := m.Name
+		if m.ID == selfID {
+			name = selfName // the leader records the new learner with an empty name
+		}
+		members = append(members, snapshot.MemberInfo{
+			ID:         m.ID,
+			Name:       name,
+			PeerURLs:   m.PeerURLs,
+			ClientURLs: m.ClientURLs,
+			IsLearner:  m.IsLearner,
+		})
+	}
+
+	// Pull the snapshot into a scratch dir (kept out of the restore target,
+	// which must be empty). Save wants exactly one endpoint: the snapshot is
+	// the point-in-time state of that node.
+	scratch, err := os.MkdirTemp("", "libetcd-seed-")
+	if err != nil {
+		return fmt.Errorf("scratch dir: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	dbPath := filepath.Join(scratch, "leader.db")
+
+	mgr := snapshot.NewV3(lg)
+	saveCfg := clientv3.Config{Endpoints: cli.Endpoints()[:1], DialTimeout: 5 * time.Second, Logger: lg}
+	if _, err := mgr.Save(ctx, saveCfg, dbPath); err != nil {
+		return fmt.Errorf("snapshot save: %w", err)
+	}
+
+	return mgr.Restore(snapshot.RestoreConfig{
+		SnapshotPath:  dbPath,
+		Name:          selfName,
+		SelfID:        selfID,
+		ClusterID:     ml.Header.ClusterId,
+		Members:       members,
+		OutputDataDir: dir,
+	})
 }
 
 // abortJoin best-effort rolls back a partial join so the cluster isn't left
