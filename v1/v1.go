@@ -199,6 +199,11 @@ type EtcdPeer interface {
 	// "libetcd/lock/" prefix in the target cluster's keyspace; they are visible
 	// to scans, watchers, and backups, and applications should avoid colliding
 	// keys under that prefix.
+	//
+	// A failure before the local server started leaves the handle reusable:
+	// Join may simply be called again. A failure after the server started
+	// exhausts the handle (the embedded server is single-use) — further Join
+	// calls fail immediately; build a fresh From handle to try again.
 	Join() error
 	// Stop shuts the node down, best-effort and idempotent.
 	Stop() error

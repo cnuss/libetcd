@@ -42,6 +42,14 @@ type peerJoiner struct {
 	// joining makes Join single-flight: a second call while one is running (or
 	// after one succeeded) errors instead of re-adding this node to the cluster.
 	joining atomic.Bool
+
+	// exhausted latches when a failed join's rollback stopped a started server.
+	// The embedded server is single-use (its lifecycle is once-guarded), so a
+	// retried Join would re-add a member to the remote cluster while Start
+	// silently no-ops on the dead server — burning the whole join budget and
+	// churning membership with no chance of success. A latched handle rejects
+	// Join immediately instead.
+	exhausted atomic.Bool
 }
 
 var _ v1.EtcdPeer = (*peerJoiner)(nil)
@@ -88,6 +96,11 @@ func (p *peerJoiner) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd
 // wedged cluster surfaces as an error instead of blocking forever.
 const defaultJoinTimeout = 90 * time.Second
 
+// discoveryTimeout bounds the /members scrape of the supplied peers. Discovery
+// either answers in connect-time scale or never will; without its own bound,
+// unreachable peers would eat the entire join budget before failing.
+const discoveryTimeout = 10 * time.Second
+
 // Join brings this node into the cluster reachable at the configured peer URLs:
 // it discovers a client endpoint by scraping the peers' /members handlers, takes
 // a cluster-wide join lock (so concurrent joiners — including ones in other
@@ -104,15 +117,52 @@ const defaultJoinTimeout = 90 * time.Second
 // reachable for a manual member remove); call Stop to shut it down. A failed
 // join therefore doesn't strand a zombie learner that would trip the cluster's
 // reconfig health checks. Join is single-flight per node; a second call errors.
+//
+// A failure before the local server started leaves the handle reusable — Join
+// may simply be called again. A failure after the server started exhausts the
+// handle (the embedded server is single-use): further Join calls fail
+// immediately, and another attempt needs a fresh From(...) handle.
 func (p *peerJoiner) Join() (err error) {
+	if p.exhausted.Load() {
+		return errors.New("join: this handle's server was started and stopped by a failed join and cannot be reused — build a fresh From(...) handle and try again")
+	}
 	if !p.joining.CompareAndSwap(false, true) {
 		return errors.New("join: already joined or join in progress")
 	}
 	defer func() {
-		if err != nil {
-			p.joining.Store(false) // failed (and rolled back if needed); allow a retry
+		if err != nil && !p.exhausted.Load() {
+			// Failed before the server started (and was rolled back if
+			// needed): the handle is intact, allow a retry. Post-start
+			// failures latch exhausted in abortJoin and keep joining set.
+			p.joining.Store(false)
 		}
 	}()
+
+	// Fail fast on local misconfiguration before touching the remote cluster:
+	// a join mutates the target's membership, so a doomed attempt must not get
+	// that far.
+	//
+	// A latched builder error (e.g. a bad WithLog level) makes every later
+	// mutate a no-op: ensureListeners would leak its freshly bound listeners,
+	// and the member-add would register embed's default localhost advertise URL
+	// with the live cluster, only for Start to surface the cause after the
+	// damage is done.
+	if cause := context.Cause(p.ctx); cause != nil {
+		return fmt.Errorf("join: configuration error: %w", cause)
+	}
+	// A server minted before Join (any client accessor — Self/Leader/Voters/
+	// Peers — mints it) was built from the bootstrap config; Join's later
+	// InitialCluster/ClusterState mutations can't reach the cached server, so
+	// it would boot a divergent single-node cluster and the join would fail
+	// only after the full promote timeout, churning remote membership on the
+	// way. Best-effort check: a concurrent accessor can still race past it,
+	// but the sequential misuse is caught with a clear error.
+	p.mu.Lock()
+	minted := p.srv != nil
+	p.mu.Unlock()
+	if minted {
+		return errors.New("join: server already minted (a client accessor like Self/Leader/Voters/Peers was called before Join); call Join first, or build a fresh From(...) handle")
+	}
 
 	logger := p.Logger()
 	if err := p.ensureListeners(); err != nil {
@@ -135,9 +185,22 @@ func (p *peerJoiner) Join() (err error) {
 		defer cancel()
 	}
 
-	peers := sanitizePeers(p.peers)
+	peers, droppedPeers := sanitizePeers(p.peers)
+	if len(droppedPeers) > 0 {
+		logger.Warn("join: ignoring unparseable peer URLs", zap.Strings("dropped", droppedPeers))
+	}
 	if len(peers) == 0 {
 		return fmt.Errorf("no valid peer URLs: %v", p.peers)
+	}
+
+	// A loopback advertise URL is unreachable from any other machine. When the
+	// target peers are non-loopback (a remote cluster), the join is
+	// structurally doomed: the cluster would accept the member-add but could
+	// never dial us back, the learner would never sync, and the join would die
+	// at the promote timeout — leaving rollback churn behind. Catch it before
+	// the member-add. Same-host joins (loopback on both sides) pass.
+	if loopbackOnly(advertisePeerUrls) && !allLoopbackPeers(peers) {
+		return fmt.Errorf("join: advertise peer URLs %v are all loopback but target peers %v are not; a remote cluster can never dial back — serve a routable address via WithPeerServing", urlsToEndpoints(advertisePeerUrls), peers)
 	}
 
 	endpoints, err := clientEndpointsFromPeers(ctx, peers)
@@ -209,6 +272,9 @@ func (p *peerJoiner) Join() (err error) {
 				return permanent(fmt.Errorf("peer URL already held by an existing cluster member: %w", aerr))
 			}
 		}
+		if isPermanentMemberAdd(aerr) {
+			return permanent(aerr)
+		}
 		return aerr
 	}); err != nil {
 		return err
@@ -262,10 +328,17 @@ func (p *peerJoiner) Join() (err error) {
 		return fmt.Errorf("seeding from leader snapshot: %w", err)
 	}
 
-	if err = p.Start(); err != nil {
-		return fmt.Errorf("starting etcd server: %w", err)
-	}
+	// start with the join deadline bounding the ready wait: the user context
+	// often has no deadline, and a joiner that can't reach ready (e.g. the
+	// cluster lost quorum after the member-add) must fail within the join
+	// budget so the rollback runs, not hang on ReadyNotify forever. The run
+	// loop may be live even when start errors, so flag started first — the
+	// rollback must Stop it either way.
+	startErr := p.start(ctx)
 	started = true
+	if startErr != nil {
+		return fmt.Errorf("starting etcd server: %w", startErr)
+	}
 	logger.Info("join: server started, promoting to voter")
 
 	// Promote learner -> voter, blocking until it sticks. etcd rejects promotion
@@ -439,6 +512,13 @@ func (p *peerJoiner) abortJoin(cli *clientv3.Client, memberID uint64, selfAddrs 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if started {
+		// The embedded server's once-guarded lifecycle is consumed: no retry
+		// on this handle could ever start it again, so latch the handle dead
+		// before anything else (even if the remove below fails).
+		p.exhausted.Store(true)
+	}
+
 	// The add can commit while its response is lost, failing the join before a
 	// member ID was ever learned. Sweep the membership for the zombie: an
 	// unstarted learner advertising our peer URLs.
@@ -523,6 +603,17 @@ func isMemberNotFound(err error) bool {
 	return errors.Is(err, rpctypes.ErrMemberNotFound)
 }
 
+// isPermanentMemberAdd matches member-add rejections no amount of retrying can
+// heal within one join: auth demands credentials this client doesn't carry
+// (none are configurable on the join path), and the learner cap is the target
+// cluster's standing config (stock etcd allows one learner). Spinning on these
+// burns the whole join budget while holding the cluster-wide join lock.
+func isPermanentMemberAdd(err error) bool {
+	return errors.Is(err, rpctypes.ErrPermissionDenied) ||
+		errors.Is(err, rpctypes.ErrUserEmpty) ||
+		errors.Is(err, rpctypes.ErrTooManyLearners)
+}
+
 // isMemberNotLearner matches etcd's ErrMemberNotLearner ("can only promote a
 // learner member") promote rejection across the shapes clientv3 returns (typed
 // rpctypes error or raw gRPC status). Seeing it for our own member ID means the
@@ -563,21 +654,61 @@ func retryUntil(ctx context.Context, interval, perAttempt time.Duration, what st
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s: %w", what, ctx.Err())
+			// The deadline is the symptom; the last attempt's error is the
+			// diagnosis (and stays matchable via errors.Is).
+			return fmt.Errorf("%s: %w (last attempt: %w)", what, ctx.Err(), err)
 		case <-time.After(interval):
 		}
 	}
+}
+
+// loopbackOnly reports whether every URL's host is a loopback address
+// (localhost, 127.0.0.0/8, ::1). Empty input is not "only loopback".
+func loopbackOnly(urls []url.URL) bool {
+	for _, u := range urls {
+		if !isLoopbackHost(u.Hostname()) {
+			return false
+		}
+	}
+	return len(urls) > 0
+}
+
+// allLoopbackPeers reports whether every peer URL targets a loopback host —
+// the same-host multi-process case, where a loopback advertise URL works.
+func allLoopbackPeers(peers []string) bool {
+	for _, s := range peers {
+		u, err := url.Parse(s)
+		if err != nil || !isLoopbackHost(u.Hostname()) {
+			return false
+		}
+	}
+	return len(peers) > 0
+}
+
+// isLoopbackHost reports whether host is a loopback name or address. Non-IP
+// hostnames other than "localhost" count as non-loopback without resolving
+// them: a wrong answer only changes when a doomed join fails, and resolving
+// would put DNS on the join path.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // sanitizePeers normalizes the caller-supplied list of peer (raft) URLs into a
 // clean, de-duplicated list ready to scrape. For each entry it trims surrounding
 // whitespace, defaults a missing scheme to http (so a bare "host:port" works),
 // and parses it as an absolute http/https URL with a host. Anything that doesn't
-// parse — empty, malformed, wrong scheme, no host — is silently dropped rather
-// than failing the whole join: a few bad entries shouldn't sink a list that also
-// holds reachable peers. Duplicates are removed, first-seen order preserved.
-func sanitizePeers(peers []string) []string {
-	out := make([]string, 0, len(peers))
+// parse — malformed, wrong scheme, no host — is dropped rather than failing the
+// whole join (a few bad entries shouldn't sink a list that also holds reachable
+// peers) and returned in dropped so the caller can report what was discarded:
+// a silently shrunk list turns a typo into an unattributable discovery timeout.
+// Empty entries and duplicates are removed without being reported; first-seen
+// order is preserved.
+func sanitizePeers(peers []string) (out, dropped []string) {
+	out = make([]string, 0, len(peers))
 	seen := make(map[string]struct{}, len(peers))
 	for _, raw := range peers {
 		s := strings.TrimSpace(raw)
@@ -589,6 +720,7 @@ func sanitizePeers(peers []string) []string {
 		}
 		u, err := url.Parse(s)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			dropped = append(dropped, raw)
 			continue
 		}
 		u.Path = strings.TrimRight(u.Path, "/")
@@ -599,22 +731,32 @@ func sanitizePeers(peers []string) []string {
 		seen[norm] = struct{}{}
 		out = append(out, norm)
 	}
-	return out
+	return out, dropped
 }
 
 // clientEndpointsFromPeers asks each peer's raft handler for the cluster
 // membership (GET <peer>/members) concurrently, and returns the client URLs of
 // the first peer that answers with at least one voting member. Learners are
 // excluded: they don't serve raft, and their client URLs are no better an
-// entrypoint than a voter's. First non-empty answer wins; the rest are dropped.
+// entrypoint than a voter's. First usable answer wins and cancels the rest;
+// when every peer fails, the per-peer errors are returned immediately instead
+// of waiting out the context. The scrape carries its own bound
+// (discoveryTimeout) so unreachable peers can't eat the whole join budget.
 func clientEndpointsFromPeers(ctx context.Context, peers []string) ([]string, error) {
-	type result struct{ eps []string }
-	ch := make(chan result, len(peers))
+	dctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel() // also reels in straggler scrapes once a winner is picked
+
+	type result struct {
+		eps []string
+		err error
+	}
+	ch := make(chan result, len(peers)) // buffered: losers must not leak
 
 	for _, peer := range peers {
 		go func(peer string) {
-			members, err := fetchMembers(ctx, peer)
+			members, err := fetchMembers(dctx, peer)
 			if err != nil {
+				ch <- result{err: fmt.Errorf("%s: %w", peer, err)}
 				return
 			}
 			var eps []string
@@ -624,21 +766,28 @@ func clientEndpointsFromPeers(ctx context.Context, peers []string) ([]string, er
 				}
 				eps = append(eps, m.ClientURLs...)
 			}
-			if len(eps) > 0 {
-				select {
-				case ch <- result{eps}:
-				default:
-				}
+			if len(eps) == 0 {
+				ch <- result{err: fmt.Errorf("%s: no voting members with client URLs", peer)}
+				return
 			}
+			ch <- result{eps: eps}
 		}(peer)
 	}
 
-	select {
-	case r := <-ch:
-		return r.eps, nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("no peer returned a member list: %w", ctx.Err())
+	var errs []error
+	for range peers {
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				errs = append(errs, r.err)
+				continue
+			}
+			return r.eps, nil
+		case <-dctx.Done():
+			return nil, fmt.Errorf("no peer returned a member list: %w", errors.Join(append(errs, context.Cause(dctx))...))
+		}
 	}
+	return nil, fmt.Errorf("no peer returned a member list: %w", errors.Join(errs...))
 }
 
 // fetchMembers GETs <peer>/members and decodes the JSON []*membership.Member the
