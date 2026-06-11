@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"reflect"
+	"strings"
 	"time"
 
 	"go.etcd.io/etcd/pkg/v3/idutil"
@@ -62,6 +64,32 @@ func isTLS(l net.Listener) bool {
 		}
 	}
 	return false
+}
+
+// parseAdvertiseURLs parses caller-supplied advertise URLs (WithoutPeerServing)
+// into url.URLs. Entries take the same shapes From accepts — bare host:port,
+// http://, or https:// (a missing scheme defaults to http) — but unlike From's
+// peer sanitization, a bad entry is an error rather than silently dropped:
+// these are this node's own advertised identity, so a typo must fail loudly. At
+// least one URL is required — a raft member with no advertise-peer-URL can't be
+// dialed by the rest of the cluster.
+func parseAdvertiseURLs(addrs []string) ([]url.URL, error) {
+	if len(addrs) == 0 {
+		return nil, errors.New("at least one advertise URL is required (the address of the caller-owned peer server)")
+	}
+	out := make([]url.URL, 0, len(addrs))
+	for _, raw := range addrs {
+		s := strings.TrimSpace(raw)
+		if !strings.Contains(s, "://") {
+			s = "http://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return nil, fmt.Errorf("advertise URL %q: must be host:port, http://host:port, or https://host:port", raw)
+		}
+		out = append(out, *u)
+	}
+	return out, nil
 }
 
 // urlsToEndpoints renders URLs as endpoint strings for clientv3.Config.

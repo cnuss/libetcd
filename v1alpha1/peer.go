@@ -87,8 +87,18 @@ func (p *peerJoiner) WithClientServing(lis net.Listener, srv *http.Server) v1.Et
 	return p
 }
 
+func (p *peerJoiner) WithoutClientServing() v1.EtcdPeer {
+	p.EtcdImpl.WithoutClientServing()
+	return p
+}
+
 func (p *peerJoiner) WithPeerServing(lis net.Listener, srv *http.Server) v1.EtcdPeer {
 	p.EtcdImpl.WithPeerServing(lis, srv)
+	return p
+}
+
+func (p *peerJoiner) WithoutPeerServing(advertiseURLs ...string) v1.EtcdPeer {
+	p.EtcdImpl.WithoutPeerServing(advertiseURLs...)
 	return p
 }
 
@@ -364,18 +374,33 @@ func (p *peerJoiner) Join() (err error) {
 	}
 	logger.Info("join: promoted to voter")
 
-	// Block until this just-promoted voter has caught up to the leader before we
-	// release the join lock. We compare networked Status (not the loopback Self
-	// client, which reads a path that can transiently panic under write load):
-	// our RaftAppliedIndex reaching ~90% of the leader's committed RaftIndex —
-	// etcd's own learner-readiness threshold — means the leader is successfully
-	// replicating to us, which is what the next joiner's reconfig health check
-	// needs. Holding the lock across this keeps the next joiner out of the
-	// unhealthy window; its add-learner retry backstops the residual leader-side
-	// settle time, which no client API exposes.
-	selfClientURL := advertiseClientUrls[0].String()
+	// Block until this just-promoted voter has caught up before we release the
+	// join lock. We prefer networked Status on both sides (not the loopback
+	// Self client, which reads a path that can transiently panic under write
+	// load): our RaftAppliedIndex reaching ~90% of the leader's committed
+	// RaftIndex — etcd's own learner-readiness threshold — means the leader is
+	// successfully replicating to us, which is what the next joiner's reconfig
+	// health check needs. Holding the lock across this keeps the next joiner
+	// out of the unhealthy window; its add-learner retry backstops the residual
+	// leader-side settle time, which no client API exposes.
+	//
+	// Headless members (WithoutClientServing) have no client URL to Status, so
+	// both sides degrade explicitly rather than assume one:
+	//   - self headless: read our own status through the in-process Self client
+	//     (see selfStatus) — the only vantage point a headless node has.
+	//   - leader headless: compare against any *other* serving voter instead.
+	//     A voter's committed RaftIndex trails the leader's, so the bar is
+	//     slightly weaker but still evidences cluster-wide replication progress;
+	//     it's the best networked proxy available. With no serving member to
+	//     measure against at all, skip the comparison with a logged caveat —
+	//     the promote itself already required etcd's learner-readiness check,
+	//     so the joiner was caught up moments ago.
+	var selfClientURL string
+	if len(advertiseClientUrls) > 0 {
+		selfClientURL = advertiseClientUrls[0].String()
+	}
 	if err = retryUntil(ctx, time.Second, 5*time.Second, "confirming voter caught up", func(actx context.Context) error {
-		self, serr := cli.Status(actx, selfClientURL)
+		self, serr := p.selfStatus(actx, cli, selfClientURL)
 		if serr != nil {
 			return serr
 		}
@@ -386,28 +411,38 @@ func (p *peerJoiner) Join() (err error) {
 			return errors.New("no leader in contact yet")
 		}
 
-		// Resolve the leader's client URL from the membership, then read its
-		// committed index to compare against ours.
+		// Resolve a serving vantage point from the membership: the leader's
+		// client URL, or — when the leader is headless — any other serving
+		// voter's.
 		ml, lerr := cli.MemberList(actx)
 		if lerr != nil {
 			return lerr
 		}
-		var leaderURL string
+		var vantageURL string
 		for _, m := range ml.Members {
 			if m.ID == self.Leader && len(m.ClientURLs) > 0 {
-				leaderURL = m.ClientURLs[0]
+				vantageURL = m.ClientURLs[0]
 				break
 			}
 		}
-		if leaderURL == "" {
-			return fmt.Errorf("leader %s has no client URL yet", types.ID(self.Leader))
+		if vantageURL == "" {
+			for _, m := range ml.Members {
+				if m.ID != memberID && !m.IsLearner && len(m.ClientURLs) > 0 {
+					vantageURL = m.ClientURLs[0]
+					break
+				}
+			}
 		}
-		leader, serr := cli.Status(actx, leaderURL)
+		if vantageURL == "" {
+			logger.Warn("join: no serving member to confirm catch-up against (leader and all other voters are headless); relying on the promote's learner-readiness check")
+			return nil
+		}
+		ref, serr := cli.Status(actx, vantageURL)
 		if serr != nil {
 			return serr
 		}
-		if self.RaftAppliedIndex < leader.RaftIndex*9/10 {
-			return fmt.Errorf("catching up: applied %d < 90%% of leader committed %d", self.RaftAppliedIndex, leader.RaftIndex)
+		if self.RaftAppliedIndex < ref.RaftIndex*9/10 {
+			return fmt.Errorf("catching up: applied %d < 90%% of committed %d at %s", self.RaftAppliedIndex, ref.RaftIndex, vantageURL)
 		}
 		return nil
 	}); err != nil {
@@ -416,6 +451,25 @@ func (p *peerJoiner) Join() (err error) {
 
 	logger.Info("join: complete, voter caught up", zap.String("member-id", types.ID(memberID).String()))
 	return nil
+}
+
+// selfStatus reads this node's Status for the catch-up gate: networked via the
+// advertise client URL when the node serves client traffic, otherwise — a
+// headless node (WithoutClientServing) has no networked vantage point on
+// itself — through the in-process Self client. The in-process read path can
+// transiently panic under write load (why the networked path is preferred when
+// available), so a panic is recovered into a retryable error instead of
+// crashing the join.
+func (p *peerJoiner) selfStatus(actx context.Context, cli *clientv3.Client, selfClientURL string) (st *clientv3.StatusResponse, err error) {
+	if selfClientURL != "" {
+		return cli.Status(actx, selfClientURL)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			st, err = nil, fmt.Errorf("in-process status panicked: %v", r)
+		}
+	}()
+	return p.Self().Status(actx, "") // loopback ignores the endpoint arg
 }
 
 // seedFromLeader pulls a point-in-time db snapshot from the cluster and restores

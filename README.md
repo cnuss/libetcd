@@ -158,6 +158,9 @@ type Builder[T any] interface {
     WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
     WithClientServing(l net.Listener, srv *http.Server) T // client listener + server (v3 API)
     WithPeerServing(l net.Listener, srv *http.Server) T   // peer listener + server; raft + app share a port
+    WithoutClientServing() T               // headless: no client listener, no client URLs; Self still works
+    WithoutPeerServing(advertiseURLs ...string) T // caller serves raft: mount PeerHandler on PeerPaths;
+                                           // advertiseURLs = the caller-owned server's addresses
 }
 
 // Executor — lifecycle.
@@ -222,6 +225,8 @@ Self-contained programs in [`./examples`](./examples):
 | `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key.      |
 | `async-join`  | Grow a cluster with concurrent `From(...).Join()` calls; verify every joiner's write survives. |
 | `load-join`   | Run sustained writes while several peers join concurrently; then verify every acknowledged write survives on every member. |
+| `headless-leader` | Run a raft-only leader (`WithoutClientServing`): no client endpoint, reads/writes flow through serving peers, `Self()` still works in-process. |
+| `external-peer-serving` | Serve the raft transport on a caller-owned `http.Server` (`WithoutPeerServing`): mount `PeerHandler()` on `PeerPaths()` next to app routes, join through it. |
 
 Run one locally:
 
@@ -230,6 +235,8 @@ make run single-node
 make run multi-node
 make run async-join
 make run load-join
+make run headless-leader
+make run external-peer-serving
 ```
 
 ## Testing

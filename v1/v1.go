@@ -118,8 +118,28 @@ type Builder[T any] interface {
 	//     so a caller wanting both must compose ClientHandler themselves.
 	//
 	// Both nil is equivalent to not calling it. Replaces the former
-	// WithClientListener + WithClientHTTP pair.
+	// WithClientListener + WithClientHTTP pair. See WithoutClientServing to opt
+	// out of client serving entirely.
 	WithClientServing(lis net.Listener, srv *http.Server) T
+	// WithoutClientServing opts the node out of client (v3 API) serving
+	// entirely: Start binds no client listener, serves no client HTTP, and the
+	// member registers no client URLs — a headless, raft/quorum-only member.
+	//
+	// In-process access keeps working: Self is wired straight to the embedded
+	// server and needs no listener. Networked accessors that need a client
+	// endpoint degrade predictably: Leader returns nil while a headless node
+	// leads, and Voters returns nil when no member in the cluster serves
+	// client traffic.
+	//
+	// At least one member of a cluster must serve client traffic for
+	// From(...).Join to work — Join discovers a client endpoint from the
+	// membership, so a cluster whose every member is headless is unreachable
+	// to joiners (and to any networked client). Bootstrap with a serving
+	// member and join headless nodes to it.
+	//
+	// Calling WithClientServing with a non-nil listener afterwards re-enables
+	// serving (last call wins).
+	WithoutClientServing() T
 	// WithPeerServing configures how the peer (raft) protocol is served, unifying
 	// the listener and the http.Server in one call.
 	//
@@ -134,7 +154,31 @@ type Builder[T any] interface {
 	//
 	// Both nil is equivalent to not calling it: a free loopback listener serving
 	// the raft handler. Replaces the former WithPeerListener + WithPeerHTTP pair.
+	// See WithoutPeerServing to serve the raft transport yourself.
 	WithPeerServing(lis net.Listener, srv *http.Server) T
+	// WithoutPeerServing opts the node out of libetcd-managed peer (raft)
+	// serving: Start binds no peer listener and serves no peer HTTP. The caller
+	// serves the raft transport instead, by mounting PeerHandler on the
+	// PeerPaths of an http.Server they own — sharing it with their own routes,
+	// middleware, and TLS.
+	//
+	// advertiseURLs are the URLs of that caller-owned server — they become the
+	// node's advertise-peer-URLs, the addresses other members dial for raft.
+	// Bind the listener first and pass its address. Entries follow the same
+	// shapes From accepts: bare host:port, http://, or https:// (a missing
+	// scheme defaults to http). At least one is required; an unparseable entry
+	// latches a configuration error.
+	//
+	// Mount PeerHandler after Start (resolving it earlier mints the server and
+	// freezes the config before Start binds the remaining listeners) — safe
+	// because no peer traffic arrives until another member exists. On the join
+	// path (EtcdPeer), resolve it lazily instead — wrap PeerHandler inside an
+	// http.HandlerFunc — since calling it before Join would freeze the
+	// bootstrap config and Join rejects a pre-minted server.
+	//
+	// Calling WithPeerServing with a non-nil listener afterwards re-enables
+	// managed serving (last call wins).
+	WithoutPeerServing(advertiseURLs ...string) T
 }
 
 type Executor interface {

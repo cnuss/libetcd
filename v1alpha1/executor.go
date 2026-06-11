@@ -11,8 +11,9 @@ import (
 // Start mints and starts the server (at most once) and serves the client and
 // peer HTTP servers on their listeners in the background. Listeners not supplied
 // via WithClientServing/WithPeerServing are auto-bound to a free loopback
-// port. It returns the latched configuration error if the server can't be
-// minted.
+// port; a side opted out via WithoutClientServing/WithoutPeerServing is
+// neither bound nor served. It returns the latched configuration error if the
+// server can't be minted.
 func (b *EtcdImpl) Start() error {
 	return b.start(nil)
 }
@@ -80,18 +81,25 @@ func (b *EtcdImpl) start(waitCtx context.Context) (err error) {
 	return err
 }
 
-// ensureListeners binds a free loopback listener for any side (client/peer) that
-// wasn't given one via WithClientServing/WithPeerServing. It must run before
-// the server is minted so the advertised URLs match the bound ports.
+// ensureListeners binds a free loopback listener for any side (client/peer)
+// that wasn't given one via WithClientServing/WithPeerServing — unless that
+// side was opted out via WithoutClientServing/WithoutPeerServing, in which case
+// nothing is bound (and, the listener staying nil, Start serves nothing on it).
+// It must run before the server is minted so the advertised URLs match the
+// bound ports.
 func (b *EtcdImpl) ensureListeners() error {
-	if b.ClientListener() == nil {
+	b.mu.Lock()
+	clientOff, peerOff := b.clientServingOff, b.peerServingOff
+	b.mu.Unlock()
+
+	if !clientOff && b.ClientListener() == nil {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("client listener: %w", err)
 		}
 		b.WithClientServing(l, nil)
 	}
-	if b.PeerListener() == nil {
+	if !peerOff && b.PeerListener() == nil {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return fmt.Errorf("peer listener: %w", err)

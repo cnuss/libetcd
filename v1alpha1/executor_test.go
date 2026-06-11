@@ -90,6 +90,126 @@ func TestJoin(t *testing.T) {
 	}
 }
 
+// TestWithoutClientServing starts a headless node: Start binds and serves no
+// client listener, the member registers no client URLs, the in-process Self
+// client still works, and Voters — with no serving member anywhere — returns
+// nil without poisoning the handle.
+func TestWithoutClientServing(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithoutClientServing()
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	if e.ClientListener() != nil {
+		t.Error("ClientListener bound despite WithoutClientServing")
+	}
+	if e.PeerListener() == nil {
+		t.Error("PeerListener nil; the peer side should still auto-bind")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cli := e.Self()
+	if cli == nil {
+		t.Fatal("Self nil on a headless node; the in-process client needs no listener")
+	}
+	if _, err := cli.Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put via Self: %v", err)
+	}
+	resp, err := cli.Get(ctx, "k")
+	if err != nil || len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
+		t.Fatalf("Get via Self = %v, %v; want value %q", resp, err, "v")
+	}
+
+	ml, err := cli.MemberList(ctx)
+	if err != nil {
+		t.Fatalf("MemberList: %v", err)
+	}
+	if len(ml.Members) != 1 || len(ml.Members[0].ClientURLs) != 0 {
+		t.Errorf("members = %+v; want a single member with no client URLs", ml.Members)
+	}
+
+	if v := e.Voters(); v != nil {
+		t.Error("Voters non-nil with no serving member anywhere")
+	}
+	// And the nil Voters above must not have latched an error: Self still works.
+	if _, err := e.Self().Get(ctx, "k"); err != nil {
+		t.Errorf("Self after Voters: %v (handle poisoned?)", err)
+	}
+}
+
+// TestWithoutPeerServing starts a node whose raft transport is caller-owned:
+// libetcd binds and serves no peer listener, the advertise-peer-URL is the
+// caller's address (so the membership reports it), and the peer protocol works
+// once the caller mounts PeerHandler on the PeerPaths of their own server.
+func TestWithoutPeerServing(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithoutPeerServing(lis.Addr().String())
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	if e.PeerListener() != nil {
+		t.Error("PeerListener bound despite WithoutPeerServing")
+	}
+
+	want := "http://" + lis.Addr().String()
+	if peers := e.Peers(); len(peers) != 1 || peers[0] != want {
+		t.Errorf("Peers() = %v, want [%s] (the caller-owned server's address)", peers, want)
+	}
+
+	// The caller serves the raft transport: mount the peer handler on the raft
+	// paths of an owned mux, post-Start.
+	mux := http.NewServeMux()
+	ph := e.PeerHandler()
+	for _, p := range e.PeerPaths() {
+		mux.Handle(p, ph)
+	}
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(lis) }()
+	defer srv.Close()
+
+	if got := httpGet(t, lis.Addr().String(), "/version"); got == "" {
+		t.Error("/version empty; peer protocol not served on the caller-owned server")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := e.Self().Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+}
+
+// TestServingOptOutLastCallWins checks a later WithClientServing with a real
+// listener overrides an earlier WithoutClientServing (last call wins).
+func TestServingOptOutLastCallWins(t *testing.T) {
+	lc, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithoutClientServing()
+	e.WithClientServing(lc, nil)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	if e.ClientListener() != lc {
+		t.Error("ClientListener is not the provided listener; WithClientServing should win over the earlier opt-out")
+	}
+}
+
 // httpGet fetches http://addr+path on the peer listener and returns the body.
 func httpGet(t *testing.T, addr, path string) string {
 	t.Helper()

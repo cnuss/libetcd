@@ -53,6 +53,13 @@ type EtcdImpl struct {
 	clientListener net.Listener
 	peerListener   net.Listener
 
+	// clientServingOff/peerServingOff record the WithoutClientServing /
+	// WithoutPeerServing opt-outs. ensureListeners skips auto-binding an
+	// opted-out side (and with no listener, Start serves nothing on it). Guarded
+	// by mu; a later With*Serving with a non-nil listener clears the flag.
+	clientServingOff bool
+	peerServingOff   bool
+
 	// clientHTTP/peerHTTP are the http.Servers returned by ClientHTTP/PeerHTTP:
 	// the ones supplied via WithClientServing/WithPeerServing, or defaults created
 	// (once each) if none were provided.

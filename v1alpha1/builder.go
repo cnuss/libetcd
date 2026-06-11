@@ -47,10 +47,28 @@ func (b *EtcdImpl) WithClientServing(lis net.Listener, srv *http.Server) v1.Etcd
 			b.cfg.ListenClientUrls = []url.URL{u}
 			b.cfg.AdvertiseClientUrls = []url.URL{u}
 			b.clientListener = lis
+			b.clientServingOff = false // last call wins over WithoutClientServing
 		}
 		if srv != nil {
 			b.clientHTTP = srv
 		}
+		return nil
+	})
+	return b
+}
+
+// WithoutClientServing opts the node out of client (v3 API) serving: it clears
+// the client listen/advertise URLs (so the member registers none) and flags the
+// client side off, which ensureListeners and Start honor by binding and serving
+// nothing. Self keeps working — the in-process client is wired straight to the
+// embedded server and needs no listener. A later WithClientServing with a
+// non-nil listener re-enables serving (last call wins).
+func (b *EtcdImpl) WithoutClientServing() v1.Etcd {
+	b.mutate(func() error {
+		b.clientServingOff = true
+		b.clientListener = nil
+		b.cfg.ListenClientUrls = nil
+		b.cfg.AdvertiseClientUrls = nil
 		return nil
 	})
 	return b
@@ -126,10 +144,43 @@ func (b *EtcdImpl) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd {
 			b.cfg.ListenPeerUrls = []url.URL{u}
 			b.cfg.AdvertisePeerUrls = []url.URL{u}
 			b.peerListener = lis
+			b.peerServingOff = false // last call wins over WithoutPeerServing
 		}
 		if srv != nil {
 			b.peerHTTP = srv
 		}
+		return nil
+	})
+	return b
+}
+
+// WithoutPeerServing opts the node out of libetcd-managed peer (raft) serving:
+// ensureListeners binds no peer listener and Start serves no peer HTTP — the
+// caller serves the raft transport themselves by mounting PeerHandler on the
+// PeerPaths of their own http.Server (after Start; see the v1 godoc for the
+// join-path lazy variant).
+//
+// advertiseURLs are the caller-owned server's addresses and become the node's
+// advertise-peer-URLs — what the other members dial. They take the URL string
+// mechanism over a net.Listener deliberately: libetcd never touches the
+// caller's listener (it must not serve or close it), and the advertised
+// address may legitimately differ from the bound one (a reverse proxy or
+// load-balancer in front). Entries are normalized like From's peers (a bare
+// host:port defaults to http); unlike From, an unparseable entry is an error
+// latched as the config cause, not silently dropped — these URLs are this
+// node's own identity, and a typo must fail loudly, not advertise a half list.
+// A later WithPeerServing with a non-nil listener re-enables managed serving
+// (last call wins).
+func (b *EtcdImpl) WithoutPeerServing(advertiseURLs ...string) v1.Etcd {
+	b.mutate(func() error {
+		urls, err := parseAdvertiseURLs(advertiseURLs)
+		if err != nil {
+			return fmt.Errorf("WithoutPeerServing: %w", err)
+		}
+		b.peerServingOff = true
+		b.peerListener = nil
+		b.cfg.ListenPeerUrls = nil
+		b.cfg.AdvertisePeerUrls = urls
 		return nil
 	})
 	return b

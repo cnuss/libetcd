@@ -107,6 +107,14 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 		}
 	}
 
+	// No serving member anywhere — every voter (and this node) is headless
+	// (WithoutClientServing) — leaves nothing to dial. Return nil without
+	// latching: this is a topology condition, not a configuration error, and
+	// it heals when a serving member joins.
+	if len(eps) == 0 {
+		return nil
+	}
+
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
