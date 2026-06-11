@@ -39,11 +39,14 @@ func New() v1.Etcd {
 
 // From returns a join-only node for an existing cluster reachable at the given
 // peer URLs (e.g. another node's Peers()). Peers are plain strings — bare
-// host:port, http://, or https:// entries all work; at Join time the library
-// trims them, defaults a missing scheme to http, de-duplicates, and silently
-// drops any it can't parse. Configure the node with the With* methods, then
-// call Join; it discovers a client endpoint by scraping the peers' /members
-// handlers and performs a managed learner-join.
+// host:port, http://, or https:// entries are accepted; at Join time the
+// library trims them, defaults a missing scheme to http, de-duplicates, and
+// silently drops any it can't parse. Note that https entries only work against
+// clusters whose endpoints present publicly-trusted certificates and don't
+// require client-cert auth — mutual-TLS or private-CA clusters are not yet
+// supported on the join path (issue #57). Configure the node with the With*
+// methods, then call Join; it discovers a client endpoint by scraping the
+// peers' /members handlers and performs a managed learner-join.
 func From(peers ...string) v1.EtcdPeer {
 	return v1alpha1.From(peers...)
 }
