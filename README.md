@@ -115,6 +115,45 @@ prefix. Working examples:
 [`examples/load-join/main.go`](./examples/load-join/main.go) (concurrent joins
 while sustained writes are in flight, then zero-loss verification).
 
+### Restarts and data-dir reuse
+
+A builder handle is **single-use**: `Start`, `Join`, and `Stop` each run at
+most once per handle. A restart — whether the process restarted or the node is
+being cycled in-process — is always a brand-new builder constructed over the
+previous incarnation's data dir:
+
+```go
+node := libetcd.New().WithDir(dir) // dir: the stopped node's data dir
+if err := node.Start(); err != nil {
+	log.Fatal(err)
+}
+```
+
+What a restart must hold constant:
+
+- **The data dir.** The member's identity (member ID, cluster ID, keyspace,
+  membership) lives there. A node started over a dir with data boots from its
+  WAL, and etcd then ignores the new builder's name, initial-cluster string,
+  cluster token, and cluster state — they don't need to match the original
+  boot. The name and client URLs are republished from the new config.
+- **The peer (raft) address, on multi-member clusters.** The membership stores
+  each member's advertised peer URL and the other members dial it: bind a
+  listener on the original address and pass it via `WithPeerServing` on every
+  restart (bind `127.0.0.1:0` the first time, record the port). Pin the client
+  address the same way if anything dials the member's registered client URL.
+  A single-member cluster can let `Start` auto-bind fresh ports.
+
+A restarted member that already joined never calls `Join` again — `Start`
+boots it from its WAL and it rejoins raft. And a restarted multi-member node's
+`Start` blocks until the cluster has quorum, so restart a stopped cluster's
+members concurrently, not serially.
+
+Working examples:
+[`examples/dir-handoff/main.go`](./examples/dir-handoff/main.go) (single node,
+new builder over an old dir),
+[`examples/restart-cycle/main.go`](./examples/restart-cycle/main.go) (two full
+stop-everything/restart cycles of a cluster, zero-loss verified each time).
+
 ## Layout
 
 Three packages, stable/alpha versioning:
@@ -222,6 +261,8 @@ Self-contained programs in [`./examples`](./examples):
 | `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key.      |
 | `async-join`  | Grow a cluster with concurrent `From(...).Join()` calls; verify every joiner's write survives. |
 | `load-join`   | Run sustained writes while several peers join concurrently; then verify every acknowledged write survives on every member. |
+| `dir-handoff` | Stop a node, then boot a brand-new builder over the same data dir (process-restart semantics); verify every key survived. |
+| `restart-cycle` | Stop every member of a cluster, recreate them all with fresh builders over the same dirs + addresses, verify zero loss — twice. |
 
 Run one locally:
 
@@ -230,6 +271,8 @@ make run single-node
 make run multi-node
 make run async-join
 make run load-join
+make run dir-handoff
+make run restart-cycle
 ```
 
 ## Testing
