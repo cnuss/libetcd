@@ -42,6 +42,14 @@ type peerJoiner struct {
 	// joining makes Join single-flight: a second call while one is running (or
 	// after one succeeded) errors instead of re-adding this node to the cluster.
 	joining atomic.Bool
+
+	// exhausted latches when a failed join's rollback stopped a started server.
+	// The embedded server is single-use (its lifecycle is once-guarded), so a
+	// retried Join would re-add a member to the remote cluster while Start
+	// silently no-ops on the dead server — burning the whole join budget and
+	// churning membership with no chance of success. A latched handle rejects
+	// Join immediately instead.
+	exhausted atomic.Bool
 }
 
 var _ v1.EtcdPeer = (*peerJoiner)(nil)
@@ -109,13 +117,24 @@ const discoveryTimeout = 10 * time.Second
 // reachable for a manual member remove); call Stop to shut it down. A failed
 // join therefore doesn't strand a zombie learner that would trip the cluster's
 // reconfig health checks. Join is single-flight per node; a second call errors.
+//
+// A failure before the local server started leaves the handle reusable — Join
+// may simply be called again. A failure after the server started exhausts the
+// handle (the embedded server is single-use): further Join calls fail
+// immediately, and another attempt needs a fresh From(...) handle.
 func (p *peerJoiner) Join() (err error) {
+	if p.exhausted.Load() {
+		return errors.New("join: this handle's server was started and stopped by a failed join and cannot be reused — build a fresh From(...) handle and try again")
+	}
 	if !p.joining.CompareAndSwap(false, true) {
 		return errors.New("join: already joined or join in progress")
 	}
 	defer func() {
-		if err != nil {
-			p.joining.Store(false) // failed (and rolled back if needed); allow a retry
+		if err != nil && !p.exhausted.Load() {
+			// Failed before the server started (and was rolled back if
+			// needed): the handle is intact, allow a retry. Post-start
+			// failures latch exhausted in abortJoin and keep joining set.
+			p.joining.Store(false)
 		}
 	}()
 
@@ -492,6 +511,13 @@ func (p *peerJoiner) seedFromLeader(ctx context.Context, cli *clientv3.Client, s
 func (p *peerJoiner) abortJoin(cli *clientv3.Client, memberID uint64, selfAddrs []string, started bool, logger *zap.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if started {
+		// The embedded server's once-guarded lifecycle is consumed: no retry
+		// on this handle could ever start it again, so latch the handle dead
+		// before anything else (even if the remove below fails).
+		p.exhausted.Store(true)
+	}
 
 	// The add can commit while its response is lost, failing the join before a
 	// member ID was ever learned. Sweep the membership for the zombie: an
