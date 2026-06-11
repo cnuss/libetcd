@@ -15,8 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
@@ -164,10 +166,7 @@ func (p *peerJoiner) Join() (err error) {
 	}()
 	logger.Info("join: lock acquired", zap.String("key", joinLock.Key()))
 
-	selfAddrs := make([]string, 0, len(advertisePeerUrls))
-	for _, u := range advertisePeerUrls {
-		selfAddrs = append(selfAddrs, u.String())
-	}
+	selfAddrs := urlsToEndpoints(advertisePeerUrls)
 
 	// A failure from here on can leave a half-joined member behind — the add
 	// itself can commit while its response is lost — so the rollback is armed
@@ -190,10 +189,12 @@ func (p *peerJoiner) Join() (err error) {
 	// started or voting member, the collision is real (a stale incarnation or a
 	// misconfigured peer), not our lost add: adopting that ID would hand a live
 	// member to the rollback, so fail permanently.
+	var clusterMembers []*etcdserverpb.Member
 	if err = retryUntil(ctx, time.Second, 5*time.Second, "adding self as learner", func(actx context.Context) error {
 		m, aerr := cli.MemberAddAsLearner(actx, selfAddrs)
 		if aerr == nil {
 			memberID = m.Member.ID
+			clusterMembers = m.Members // the full membership after the add
 			return nil
 		}
 		if isPeerURLExist(aerr) {
@@ -212,31 +213,46 @@ func (p *peerJoiner) Join() (err error) {
 	}); err != nil {
 		return err
 	}
-	logger.Info("join: added as learner", zap.String("member-id", fmt.Sprintf("%x", memberID)))
+	logger.Info("join: added as learner", zap.String("member-id", types.ID(memberID).String()))
 
-	members, err := cli.MemberList(ctx)
-	if err != nil {
-		return fmt.Errorf("listing members: %w", err)
+	// The ErrPeerURLExist recovery path adopts a prior attempt's member ID
+	// without an add response to read the membership from; list it instead.
+	if clusterMembers == nil {
+		ml, lerr := cli.MemberList(ctx)
+		if lerr != nil {
+			return fmt.Errorf("listing members: %w", lerr)
+		}
+		clusterMembers = ml.Members
 	}
 
 	// initial-cluster is name=peerURL for every started voting member, plus this
 	// node. Learners and not-yet-started members (empty name) are excluded; their
 	// membership reaches us via the raft log, not the bootstrap string.
-	initialCluster := []string{}
-	for _, m := range members.Members {
+	//
+	// Excluding learners is only safe because the seeded boot path skips etcd's
+	// membership validation: seedFromLeader writes a full data dir before Start,
+	// so etcd boots from existing data and never reaches
+	// bootstrapExistingClusterNoWAL → ValidateClusterAndAssignIDs, whose exact
+	// member-count check compares this voters-only view against the full remote
+	// membership (learners included). If seeding is ever bypassed for a *fresh*
+	// join — today the only skip is a non-empty caller-supplied dir, i.e. a
+	// restart — any standing learner in the cluster would fail Start with
+	// "member count is unequal".
+	initialCluster := types.URLsMap{}
+	for _, m := range clusterMembers {
 		if m.Name == "" || m.IsLearner {
 			continue
 		}
-		for _, pu := range m.PeerURLs {
-			initialCluster = append(initialCluster, fmt.Sprintf("%s=%s", m.Name, pu))
+		urls, uerr := types.NewURLs(m.PeerURLs)
+		if uerr != nil {
+			return fmt.Errorf("parsing peer URLs of member %s: %w", m.Name, uerr)
 		}
+		initialCluster[m.Name] = urls
 	}
-	for _, pu := range advertisePeerUrls {
-		initialCluster = append(initialCluster, fmt.Sprintf("%s=%s", name, pu.String()))
-	}
+	initialCluster[name] = advertisePeerUrls
 
 	p.mutate(func() error {
-		p.cfg.InitialCluster = strings.Join(initialCluster, ",")
+		p.cfg.InitialCluster = initialCluster.String()
 		p.cfg.ClusterState = embed.ClusterStateFlagExisting
 		p.clusterSet.Store(true)
 		return nil
@@ -311,13 +327,13 @@ func (p *peerJoiner) Join() (err error) {
 			}
 		}
 		if leaderURL == "" {
-			return fmt.Errorf("leader %x has no client URL yet", self.Leader)
+			return fmt.Errorf("leader %s has no client URL yet", types.ID(self.Leader))
 		}
 		leader, serr := cli.Status(actx, leaderURL)
 		if serr != nil {
 			return serr
 		}
-		if self.RaftAppliedIndex < leader.RaftIndex/10*9 {
+		if self.RaftAppliedIndex < leader.RaftIndex*9/10 {
 			return fmt.Errorf("catching up: applied %d < 90%% of leader committed %d", self.RaftAppliedIndex, leader.RaftIndex)
 		}
 		return nil
@@ -325,7 +341,7 @@ func (p *peerJoiner) Join() (err error) {
 		return err
 	}
 
-	logger.Info("join: complete, voter caught up", zap.String("member-id", fmt.Sprintf("%x", memberID)))
+	logger.Info("join: complete, voter caught up", zap.String("member-id", types.ID(memberID).String()))
 	return nil
 }
 
@@ -450,11 +466,11 @@ func (p *peerJoiner) abortJoin(cli *clientv3.Client, memberID uint64, selfAddrs 
 		if started {
 			msg = "join rollback: removing half-joined member failed; leaving local server running so the cluster keeps quorum — remove the member manually, then Stop()"
 		}
-		logger.Warn(msg, zap.String("member-id", fmt.Sprintf("%x", memberID)), zap.Error(rerr))
+		logger.Warn(msg, zap.String("member-id", types.ID(memberID).String()), zap.Error(rerr))
 		return
 	}
 	logger.Info("join rollback: removed half-joined member",
-		zap.String("member-id", fmt.Sprintf("%x", memberID)))
+		zap.String("member-id", types.ID(memberID).String()))
 
 	if started {
 		if serr := p.Stop(); serr != nil {
@@ -493,18 +509,18 @@ func findMemberByPeerURLs(ctx context.Context, cli *clientv3.Client, urls []stri
 	return 0, false, nil
 }
 
-// isPeerURLExist matches etcd's "Peer URLs already exists" member-add rejection
-// across the error shapes clientv3 returns (converted rpctypes error or raw gRPC
-// status).
+// isPeerURLExist matches etcd's "Peer URLs already exists" member-add
+// rejection. Typed match only: clientv3 pre-converts every cluster-op error
+// via rpctypes.Error before returning it, so errors.Is against the sentinel
+// already covers all shapes the client hands back.
 func isPeerURLExist(err error) bool {
-	return err != nil && (errors.Is(err, rpctypes.ErrPeerURLExist) ||
-		strings.Contains(err.Error(), "Peer URLs already exists"))
+	return errors.Is(err, rpctypes.ErrPeerURLExist)
 }
 
-// isMemberNotFound matches etcd's "member not found" across the same shapes.
+// isMemberNotFound matches etcd's "member not found" rejection. Typed match
+// only, for the same reason as isPeerURLExist.
 func isMemberNotFound(err error) bool {
-	return err != nil && (errors.Is(err, rpctypes.ErrMemberNotFound) ||
-		strings.Contains(err.Error(), "member not found"))
+	return errors.Is(err, rpctypes.ErrMemberNotFound)
 }
 
 // isMemberNotLearner matches etcd's ErrMemberNotLearner ("can only promote a
