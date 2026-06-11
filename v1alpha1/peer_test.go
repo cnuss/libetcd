@@ -144,6 +144,24 @@ func TestJoinFailsFastWhenServerMinted(t *testing.T) {
 	}
 }
 
+// TestJoinHandleExhausted pins the single-use contract: once a failed join's
+// rollback stopped a started server (latched by abortJoin), the handle refuses
+// further Join calls immediately instead of re-adding a member to the remote
+// cluster and spinning the whole budget against a server that can never start.
+func TestJoinHandleExhausted(t *testing.T) {
+	p := From("10.0.0.1:2380").(*peerJoiner)
+	p.exhausted.Store(true) // what abortJoin does when started
+
+	start := time.Now()
+	err := p.Join()
+	if err == nil || !strings.Contains(err.Error(), "cannot be reused") {
+		t.Fatalf("Join = %v, want exhausted-handle error", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Join took %v, want immediate refusal", elapsed)
+	}
+}
+
 // TestJoinFailsFastOnLoopbackMismatch: with no WithPeerServing the advertise
 // peer URL is an auto-bound loopback address, which a remote (non-loopback)
 // cluster can never dial back; Join must fail before the member-add rather
