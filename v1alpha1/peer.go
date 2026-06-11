@@ -88,6 +88,11 @@ func (p *peerJoiner) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd
 // wedged cluster surfaces as an error instead of blocking forever.
 const defaultJoinTimeout = 90 * time.Second
 
+// discoveryTimeout bounds the /members scrape of the supplied peers. Discovery
+// either answers in connect-time scale or never will; without its own bound,
+// unreachable peers would eat the entire join budget before failing.
+const discoveryTimeout = 10 * time.Second
+
 // Join brings this node into the cluster reachable at the configured peer URLs:
 // it discovers a client endpoint by scraping the peers' /members handlers, takes
 // a cluster-wide join lock (so concurrent joiners — including ones in other
@@ -161,7 +166,10 @@ func (p *peerJoiner) Join() (err error) {
 		defer cancel()
 	}
 
-	peers := sanitizePeers(p.peers)
+	peers, droppedPeers := sanitizePeers(p.peers)
+	if len(droppedPeers) > 0 {
+		logger.Warn("join: ignoring unparseable peer URLs", zap.Strings("dropped", droppedPeers))
+	}
 	if len(peers) == 0 {
 		return fmt.Errorf("no valid peer URLs: %v", p.peers)
 	}
@@ -245,6 +253,9 @@ func (p *peerJoiner) Join() (err error) {
 				return permanent(fmt.Errorf("peer URL already held by an existing cluster member: %w", aerr))
 			}
 		}
+		if isPermanentMemberAdd(aerr) {
+			return permanent(aerr)
+		}
 		return aerr
 	}); err != nil {
 		return err
@@ -298,10 +309,17 @@ func (p *peerJoiner) Join() (err error) {
 		return fmt.Errorf("seeding from leader snapshot: %w", err)
 	}
 
-	if err = p.Start(); err != nil {
-		return fmt.Errorf("starting etcd server: %w", err)
-	}
+	// start with the join deadline bounding the ready wait: the user context
+	// often has no deadline, and a joiner that can't reach ready (e.g. the
+	// cluster lost quorum after the member-add) must fail within the join
+	// budget so the rollback runs, not hang on ReadyNotify forever. The run
+	// loop may be live even when start errors, so flag started first — the
+	// rollback must Stop it either way.
+	startErr := p.start(ctx)
 	started = true
+	if startErr != nil {
+		return fmt.Errorf("starting etcd server: %w", startErr)
+	}
 	logger.Info("join: server started, promoting to voter")
 
 	// Promote learner -> voter, blocking until it sticks. etcd rejects promotion
@@ -559,6 +577,17 @@ func isMemberNotFound(err error) bool {
 	return errors.Is(err, rpctypes.ErrMemberNotFound)
 }
 
+// isPermanentMemberAdd matches member-add rejections no amount of retrying can
+// heal within one join: auth demands credentials this client doesn't carry
+// (none are configurable on the join path), and the learner cap is the target
+// cluster's standing config (stock etcd allows one learner). Spinning on these
+// burns the whole join budget while holding the cluster-wide join lock.
+func isPermanentMemberAdd(err error) bool {
+	return errors.Is(err, rpctypes.ErrPermissionDenied) ||
+		errors.Is(err, rpctypes.ErrUserEmpty) ||
+		errors.Is(err, rpctypes.ErrTooManyLearners)
+}
+
 // isMemberNotLearner matches etcd's ErrMemberNotLearner ("can only promote a
 // learner member") promote rejection across the shapes clientv3 returns (typed
 // rpctypes error or raw gRPC status). Seeing it for our own member ID means the
@@ -599,7 +628,9 @@ func retryUntil(ctx context.Context, interval, perAttempt time.Duration, what st
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s: %w", what, ctx.Err())
+			// The deadline is the symptom; the last attempt's error is the
+			// diagnosis (and stays matchable via errors.Is).
+			return fmt.Errorf("%s: %w (last attempt: %w)", what, ctx.Err(), err)
 		case <-time.After(interval):
 		}
 	}
@@ -644,11 +675,14 @@ func isLoopbackHost(host string) bool {
 // clean, de-duplicated list ready to scrape. For each entry it trims surrounding
 // whitespace, defaults a missing scheme to http (so a bare "host:port" works),
 // and parses it as an absolute http/https URL with a host. Anything that doesn't
-// parse — empty, malformed, wrong scheme, no host — is silently dropped rather
-// than failing the whole join: a few bad entries shouldn't sink a list that also
-// holds reachable peers. Duplicates are removed, first-seen order preserved.
-func sanitizePeers(peers []string) []string {
-	out := make([]string, 0, len(peers))
+// parse — malformed, wrong scheme, no host — is dropped rather than failing the
+// whole join (a few bad entries shouldn't sink a list that also holds reachable
+// peers) and returned in dropped so the caller can report what was discarded:
+// a silently shrunk list turns a typo into an unattributable discovery timeout.
+// Empty entries and duplicates are removed without being reported; first-seen
+// order is preserved.
+func sanitizePeers(peers []string) (out, dropped []string) {
+	out = make([]string, 0, len(peers))
 	seen := make(map[string]struct{}, len(peers))
 	for _, raw := range peers {
 		s := strings.TrimSpace(raw)
@@ -660,6 +694,7 @@ func sanitizePeers(peers []string) []string {
 		}
 		u, err := url.Parse(s)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			dropped = append(dropped, raw)
 			continue
 		}
 		u.Path = strings.TrimRight(u.Path, "/")
@@ -670,22 +705,32 @@ func sanitizePeers(peers []string) []string {
 		seen[norm] = struct{}{}
 		out = append(out, norm)
 	}
-	return out
+	return out, dropped
 }
 
 // clientEndpointsFromPeers asks each peer's raft handler for the cluster
 // membership (GET <peer>/members) concurrently, and returns the client URLs of
 // the first peer that answers with at least one voting member. Learners are
 // excluded: they don't serve raft, and their client URLs are no better an
-// entrypoint than a voter's. First non-empty answer wins; the rest are dropped.
+// entrypoint than a voter's. First usable answer wins and cancels the rest;
+// when every peer fails, the per-peer errors are returned immediately instead
+// of waiting out the context. The scrape carries its own bound
+// (discoveryTimeout) so unreachable peers can't eat the whole join budget.
 func clientEndpointsFromPeers(ctx context.Context, peers []string) ([]string, error) {
-	type result struct{ eps []string }
-	ch := make(chan result, len(peers))
+	dctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel() // also reels in straggler scrapes once a winner is picked
+
+	type result struct {
+		eps []string
+		err error
+	}
+	ch := make(chan result, len(peers)) // buffered: losers must not leak
 
 	for _, peer := range peers {
 		go func(peer string) {
-			members, err := fetchMembers(ctx, peer)
+			members, err := fetchMembers(dctx, peer)
 			if err != nil {
+				ch <- result{err: fmt.Errorf("%s: %w", peer, err)}
 				return
 			}
 			var eps []string
@@ -695,21 +740,28 @@ func clientEndpointsFromPeers(ctx context.Context, peers []string) ([]string, er
 				}
 				eps = append(eps, m.ClientURLs...)
 			}
-			if len(eps) > 0 {
-				select {
-				case ch <- result{eps}:
-				default:
-				}
+			if len(eps) == 0 {
+				ch <- result{err: fmt.Errorf("%s: no voting members with client URLs", peer)}
+				return
 			}
+			ch <- result{eps: eps}
 		}(peer)
 	}
 
-	select {
-	case r := <-ch:
-		return r.eps, nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("no peer returned a member list: %w", ctx.Err())
+	var errs []error
+	for range peers {
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				errs = append(errs, r.err)
+				continue
+			}
+			return r.eps, nil
+		case <-dctx.Done():
+			return nil, fmt.Errorf("no peer returned a member list: %w", errors.Join(append(errs, context.Cause(dctx))...))
+		}
 	}
+	return nil, fmt.Errorf("no peer returned a member list: %w", errors.Join(errs...))
 }
 
 // fetchMembers GETs <peer>/members and decodes the JSON []*membership.Member the

@@ -14,8 +14,18 @@ import (
 // port. It returns the latched configuration error if the server can't be
 // minted.
 func (b *EtcdImpl) Start() error {
-	if err := b.ensureListeners(); err != nil {
-		return err
+	return b.start(nil)
+}
+
+// start is Start with an optional wait bound: when waitCtx is non-nil, the
+// ready wait is bounded by it instead of the user context, and its expiry is
+// returned as an error. Join passes its own deadline here — the user context
+// often has none (WithContext with a plain cancel), and an unready joiner must
+// surface within the join budget so the rollback can run, not hang forever on
+// ReadyNotify.
+func (b *EtcdImpl) start(waitCtx context.Context) (err error) {
+	if lerr := b.ensureListeners(); lerr != nil {
+		return lerr
 	}
 	srv := b.Server()
 	if srv == nil {
@@ -42,15 +52,24 @@ func (b *EtcdImpl) Start() error {
 			go func() { _ = ch.Serve(cl) }()
 		}
 
-		// Block until the node is ready to serve, bounded by the caller's
-		// context (WithContext) so it can't hang forever.
-		waitCtx := b.ctx
+		// Block until the node is ready to serve, bounded by the supplied wait
+		// context, falling back to the caller's context (WithContext) so it
+		// can't hang forever. Only the explicit wait bound reports expiry as an
+		// error: Start's historical contract is to return nil after a user-
+		// context cancel (shutdown is the AfterFunc's job).
+		wctx := b.ctx
 		if uctx != nil {
-			waitCtx = uctx
+			wctx = uctx
+		}
+		if waitCtx != nil {
+			wctx = waitCtx
 		}
 		select {
 		case <-srv.ReadyNotify():
-		case <-waitCtx.Done():
+		case <-wctx.Done():
+			if waitCtx != nil {
+				err = fmt.Errorf("server not ready: %w", context.Cause(wctx))
+			}
 		}
 
 		// Graceful shutdown when the caller's context (WithContext) is cancelled.
@@ -58,7 +77,7 @@ func (b *EtcdImpl) Start() error {
 			context.AfterFunc(uctx, func() { _ = b.Stop() })
 		}
 	})
-	return nil
+	return err
 }
 
 // ensureListeners binds a free loopback listener for any side (client/peer) that
