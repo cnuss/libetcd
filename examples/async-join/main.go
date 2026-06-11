@@ -29,27 +29,41 @@ func main() {
 	if err := leader.Start(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("leader started with peer URLs: %v\n", leader.Peers())
+	// One MemberList RPC, reused by every joiner below.
+	peerURLs := leader.Peers()
+	fmt.Printf("leader started with peer URLs: %v\n", peerURLs)
 
+	// Collect failures and fail from main: log.Fatalf inside a goroutine would
+	// os.Exit mid-membership-change, skipping the deferred cancel and killing
+	// the sibling joiners.
+	joinErrs := make(chan error, peerCount)
 	for i := range peerCount {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			log.Printf("joining peer %d to cluster...", i)
-			peer := libetcd.From(leader.Peers()...).WithContext(ctx)
+			peer := libetcd.From(peerURLs...).WithContext(ctx)
 			if err := peer.Join(); err != nil {
-				log.Fatalf("join %d: %v", i, err)
+				joinErrs <- fmt.Errorf("join %d: %w", i, err)
+				return
 			}
 			// Write through the freshly joined node itself: if the join left it
 			// healthy, this commits cluster-wide.
 			key := fmt.Sprintf("joined/%d", i)
 			if _, err := peer.Self().Put(ctx, key, fmt.Sprintf("hello from peer %d", i)); err != nil {
-				log.Fatalf("put %s: %v", key, err)
+				joinErrs <- fmt.Errorf("put %s: %w", key, err)
+				return
 			}
 			log.Printf("peer %d joined and wrote %s", i, key)
 		}(i)
 	}
 	wg.Wait()
+	close(joinErrs)
+	for err := range joinErrs {
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	// Read every joiner's key back through the leader. A missing key means a
 	// put was lost — fail loudly.
@@ -64,6 +78,12 @@ func main() {
 		log.Fatalf("data loss: %d/%d keys survived", got, peerCount)
 	}
 
-	fmt.Printf("voters: %v\n", leader.Voters().Endpoints())
+	// Voters() dials a new networked client — close it once we've printed.
+	voters := leader.Voters()
+	if voters == nil {
+		log.Fatal("voters client is nil")
+	}
+	defer voters.Close()
+	fmt.Printf("voters: %v\n", voters.Endpoints())
 	fmt.Printf("all %d puts survived\n", peerCount)
 }

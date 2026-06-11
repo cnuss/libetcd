@@ -1,6 +1,7 @@
-// Package v1 is the stable public surface for libetcd. The Builder interface
-// here is the contract callers depend on across releases; the implementation
-// lives in v1alpha1 and may change between alpha revisions.
+// Package v1 is the intended-stable public surface for libetcd. The Builder
+// interface here is the contract callers should depend on, but until the
+// module reaches v1.0.0 breaking changes can still land here; the
+// implementation lives in v1alpha1 and may change between alpha revisions.
 //
 // libetcd is a thin, developer-friendly SDK for embedded etcd: configure a node
 // with a fluent builder, then mint an etcdserver.EtcdServer from the validated
@@ -95,7 +96,8 @@ type Builder[T any] interface {
 	WithName(name string) T
 	// WithDir sets the data directory. Default: a fresh temp directory.
 	WithDir(dir string) T
-	// WithClusterToken sets the initial-cluster token. Default "libetcd-cluster".
+	// WithClusterToken sets the initial-cluster token. Default "etcd-cluster"
+	// (embed's default).
 	WithClusterToken(token string) T
 	// WithLog routes the server's logs to writer at the given level (e.g.
 	// "debug", "info", "warn", "error"). A node is silent by default.
@@ -165,6 +167,11 @@ type EtcdPeer interface {
 	// and promotes itself to a voting member once caught up. It blocks until the
 	// node is voting or the bounding context elapses; on failure after the
 	// member-add it rolls the half-joined member back out of the cluster.
+	//
+	// The join lock writes transient coordination keys under the
+	// "libetcd/lock/" prefix in the target cluster's keyspace; they are visible
+	// to scans, watchers, and backups, and applications should avoid colliding
+	// keys under that prefix.
 	Join() error
 	// Stop shuts the node down, best-effort and idempotent.
 	Stop() error
