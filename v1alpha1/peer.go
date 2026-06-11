@@ -99,9 +99,11 @@ const defaultJoinTimeout = 90 * time.Second
 // On failure after the member-add, Join rolls back: it removes the half-joined
 // member from the cluster, then stops the local server if it started — in that
 // order, because after a promote this node is a voter and stopping it first
-// could drop the cluster below quorum. A failed join therefore doesn't strand a
-// zombie learner that would trip the cluster's reconfig health checks. Join is
-// single-flight per node; a second call errors.
+// could drop the cluster below quorum. If the remove itself ultimately fails,
+// the local server is deliberately left running (a live voter keeps quorum
+// reachable for a manual member remove); call Stop to shut it down. A failed
+// join therefore doesn't strand a zombie learner that would trip the cluster's
+// reconfig health checks. Join is single-flight per node; a second call errors.
 func (p *peerJoiner) Join() (err error) {
 	if !p.joining.CompareAndSwap(false, true) {
 		return errors.New("join: already joined or join in progress")
@@ -442,8 +444,13 @@ func (p *peerJoiner) abortJoin(cli *clientv3.Client, memberID uint64, selfAddrs 
 	// unstarted learner advertising our peer URLs.
 	if memberID == 0 {
 		id, found, ferr := findMemberByPeerURLs(ctx, cli, selfAddrs)
-		if ferr != nil || !found {
-			return // no member known or discoverable; nothing to roll back
+		if ferr != nil {
+			logger.Warn("join rollback: could not read membership to check for a half-added member; verify manually",
+				zap.Strings("peer-urls", selfAddrs), zap.Error(ferr))
+			return
+		}
+		if !found {
+			return // the add never committed; nothing to roll back
 		}
 		memberID = id
 	}
@@ -517,13 +524,15 @@ func isMemberNotFound(err error) bool {
 }
 
 // isMemberNotLearner matches etcd's ErrMemberNotLearner ("can only promote a
-// learner member") promote rejection. Seeing it for our own member ID means the
-// promotion already committed (a prior attempt's response was lost). Typed
-// match only, deliberately: a substring fallback would also match
-// ErrLearnerNotReady ("can only promote a learner member which is in sync with
-// leader") — the retryable not-caught-up-yet rejection, the opposite meaning.
+// learner member") promote rejection across the shapes clientv3 returns (typed
+// rpctypes error or raw gRPC status). Seeing it for our own member ID means the
+// promotion already committed (a prior attempt's response was lost). The string
+// form is matched by exact suffix, deliberately: a Contains match would also
+// hit ErrLearnerNotReady ("can only promote a learner member which is in sync
+// with leader") — the retryable not-caught-up rejection, the opposite meaning.
 func isMemberNotLearner(err error) bool {
-	return errors.Is(err, rpctypes.ErrMemberNotLearner)
+	return err != nil && (errors.Is(err, rpctypes.ErrMemberNotLearner) ||
+		strings.HasSuffix(err.Error(), "can only promote a learner member"))
 }
 
 // permanentError marks an error retryUntil must not retry: the condition will
