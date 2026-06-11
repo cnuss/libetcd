@@ -4,7 +4,7 @@
 // node with With* methods, Start it, and use the in-process loopback client.
 //
 //	e := libetcd.New()
-//	e.WithDir("/tmp/data").WithClientServing(lc, nil)
+//	e.WithDir("/tmp/data").WithClientListener(lc)
 //	if err := e.Start(); err != nil { /* ... */ }
 //	defer e.Stop()
 //	e.Self().Put(ctx, "k", "v")

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 
 	"go.etcd.io/etcd/client/pkg/v3/logutil"
@@ -29,28 +28,35 @@ func (b *EtcdImpl) WithDir(dir string) v1.Etcd {
 	return b
 }
 
-// WithClientServing configures how the client (v3 API) is served, unifying the
-// listener and the http.Server in one call (replacing the former
-// WithClientListener + WithClientHTTP pair).
+// WithClientListener sets the socket the client (v3 API) is served on; the
+// listener is the only serving knob (libetcd serves everything it binds).
 //
-//   - lis, when non-nil, sets the client listen+advertise URL from its address
-//     and is retained (see ClientListener). When nil, Start auto-binds a free
-//     loopback listener (see ensureListeners).
-//   - srv, when non-nil, supplies the client http.Server. If it carries its own
-//     Handler it is served as-is, replacing the client API; unlike the peer side
-//     the client handler is content-type-multiplexed gRPC and can't be path-muxed
-//     (see ClientHTTP), so a caller wanting both composes ClientHandler itself.
-func (b *EtcdImpl) WithClientServing(lis net.Listener, srv *http.Server) v1.Etcd {
+//   - Non-nil lis: the client listen+advertise URLs derive from its address
+//     (https if TLS-wrapped); the factory will hand it out at materialization.
+//   - Nil: headless client side — the listener and http factories are cleared
+//     ("do nothing"), no socket is bound, nothing is served, and no client
+//     URLs are registered with the cluster. Self() still works in-process.
+//
+// Last call wins, but only until the listener has been materialized (the
+// first ClientListener() call, typically inside Start/Join): after that a
+// changed listener can't reach the running config, so the call latches an
+// error instead of lying.
+func (b *EtcdImpl) WithClientListener(lis net.Listener) v1.Etcd {
 	b.mutate(func() error {
-		if lis != nil {
-			u := listenerURL(lis)
-			b.cfg.ListenClientUrls = []url.URL{u}
-			b.cfg.AdvertiseClientUrls = []url.URL{u}
-			b.clientListener = lis
+		if b.clientListener != nil {
+			return fmt.Errorf("client listener already materialized; configure before Start/Join")
 		}
-		if srv != nil {
-			b.clientHTTP = srv
+		if lis == nil {
+			b.clientListenerFactory = nil
+			b.clientHTTPFactory = nil
+			b.cfg.ListenClientUrls = nil
+			b.cfg.AdvertiseClientUrls = nil
+			return nil
 		}
+		b.clientListenerFactory = func() (net.Listener, error) { return lis, nil }
+		u := listenerURL(lis)
+		b.cfg.ListenClientUrls = []url.URL{u}
+		b.cfg.AdvertiseClientUrls = []url.URL{u}
 		return nil
 	})
 	return b
@@ -105,31 +111,29 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 	return b
 }
 
-// WithPeerServing configures how the peer (raft) protocol is served, unifying
-// the listener and the http.Server in one call (replacing the former
-// WithPeerListener + WithPeerHTTP pair).
+// WithPeerListener sets the socket the peer (raft) protocol is served on; the
+// listener is the only serving knob (libetcd serves everything it binds).
 //
-//   - lis, when non-nil, sets the peer listen+advertise URL from its address and
-//     is retained (see PeerListener). When nil, Start auto-binds a free loopback
-//     listener (see ensureListeners).
-//   - srv, when non-nil, supplies the peer http.Server. If it carries its own
-//     Handler, the raft paths are muxed onto PeerHandler at serve time so raft
-//     keeps working alongside the supplied application routes; see PeerHTTP.
+//   - Non-nil lis: the peer listen+advertise URLs derive from its address
+//     (https if TLS-wrapped); the factory will hand it out at materialization.
+//   - Nil: a configuration error, latched — a raft member must advertise a
+//     peer URL, so the peer side cannot be turned off.
 //
-// The handler merge is deferred to PeerHTTP (resolved during Start) rather than
-// done here, because building the peer handler mints the server — doing that at
-// builder time would freeze the config before Start binds the real listeners.
-func (b *EtcdImpl) WithPeerServing(lis net.Listener, srv *http.Server) v1.Etcd {
+// Last call wins, but only until the listener has been materialized (the first
+// PeerListener() call, typically inside Start/Join): after that a changed
+// listener can't reach the running config, so the call latches an error.
+func (b *EtcdImpl) WithPeerListener(lis net.Listener) v1.Etcd {
 	b.mutate(func() error {
-		if lis != nil {
-			u := listenerURL(lis)
-			b.cfg.ListenPeerUrls = []url.URL{u}
-			b.cfg.AdvertisePeerUrls = []url.URL{u}
-			b.peerListener = lis
+		if b.peerListener != nil {
+			return fmt.Errorf("peer listener already materialized; configure before Start/Join")
 		}
-		if srv != nil {
-			b.peerHTTP = srv
+		if lis == nil {
+			return fmt.Errorf("peer listener cannot be nil: a raft member must advertise a peer URL")
 		}
+		b.peerListenerFactory = func() (net.Listener, error) { return lis, nil }
+		u := listenerURL(lis)
+		b.cfg.ListenPeerUrls = []url.URL{u}
+		b.cfg.AdvertisePeerUrls = []url.URL{u}
 		return nil
 	})
 	return b

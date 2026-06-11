@@ -4,35 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"time"
 )
 
 // Start mints and starts the server (at most once) and serves the client and
-// peer HTTP servers on their listeners in the background. Listeners not supplied
-// via WithClientServing/WithPeerServing are auto-bound to a free loopback
-// port. It returns the latched configuration error if the server can't be
-// minted.
+// peer HTTP servers on their listeners in the background. Listeners not
+// supplied via WithClientListener/WithPeerListener materialize from the
+// auto-bind defaults (a free loopback port each); a headless client side
+// (WithClientListener(nil)) binds and serves nothing. It returns the latched
+// configuration error if the server can't be minted.
 //
 // Over a data dir that already holds a member's data, the minted server boots
 // that member from its WAL — a restart, with the config's name/initial-cluster/
 // cluster-state ignored in favor of the on-disk identity. Start/Stop are
 // once-guarded, so a restart is always a fresh builder over the old dir; see
 // the v1.Executor contract.
-func (b *EtcdImpl) Start() error {
-	return b.start(nil)
-}
-
-// start is Start with an optional wait bound: when waitCtx is non-nil, the
-// ready wait is bounded by it instead of the user context, and its expiry is
-// returned as an error. Join passes its own deadline here — the user context
-// often has none (WithContext with a plain cancel), and an unready joiner must
-// surface within the join budget so the rollback can run, not hang forever on
-// ReadyNotify.
-func (b *EtcdImpl) start(waitCtx context.Context) (err error) {
-	if lerr := b.ensureListeners(); lerr != nil {
-		return lerr
-	}
+//
+// When startWaitCtx is set (Join sets it before calling Start), the ready wait
+// is bounded by it instead of the user context and its expiry is returned as
+// an error — an unready joiner must surface within the join budget so the
+// rollback can run, not hang forever on ReadyNotify.
+func (b *EtcdImpl) Start() (err error) {
+	// Server() materializes the listeners on the way (each factory invoked
+	// once; nil factories do nothing) before minting from the derived URLs.
 	srv := b.Server()
 	if srv == nil {
 		return context.Cause(b.ctx)
@@ -42,20 +36,22 @@ func (b *EtcdImpl) start(waitCtx context.Context) (err error) {
 		b.started.Store(true) // run loop active; Stop must HardStop from here
 
 		b.mu.Lock()
-		cl, pl, uctx := b.clientListener, b.peerListener, b.userCtx
+		cl, pl, uctx, waitCtx := b.clientListener, b.peerListener, b.userCtx, b.startWaitCtx
 		b.mu.Unlock()
 
 		// Serve the peer + client listeners *before* waiting for ready: a joining
 		// member needs its peer server up to receive raft and catch up, or
-		// ReadyNotify never fires. PeerHTTP/ClientHTTP resolve the supplied or
-		// default http.Server (and mux any application handler onto the raft paths).
+		// ReadyNotify never fires. PeerHTTP/ClientHTTP resolve each side's
+		// http factory; a side with no listener serves nothing.
 		if pl != nil {
-			ph := b.PeerHTTP()
-			go func() { _ = ph.Serve(pl) }()
+			if ph := b.PeerHTTP(); ph != nil {
+				go func() { _ = ph.Serve(pl) }()
+			}
 		}
 		if cl != nil {
-			ch := b.ClientHTTP()
-			go func() { _ = ch.Serve(cl) }()
+			if ch := b.ClientHTTP(); ch != nil {
+				go func() { _ = ch.Serve(cl) }()
+			}
 		}
 
 		// Block until the node is ready to serve, bounded by the supplied wait
@@ -84,27 +80,6 @@ func (b *EtcdImpl) start(waitCtx context.Context) (err error) {
 		}
 	})
 	return err
-}
-
-// ensureListeners binds a free loopback listener for any side (client/peer) that
-// wasn't given one via WithClientServing/WithPeerServing. It must run before
-// the server is minted so the advertised URLs match the bound ports.
-func (b *EtcdImpl) ensureListeners() error {
-	if b.ClientListener() == nil {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return fmt.Errorf("client listener: %w", err)
-		}
-		b.WithClientServing(l, nil)
-	}
-	if b.PeerListener() == nil {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return fmt.Errorf("peer listener: %w", err)
-		}
-		b.WithPeerServing(l, nil)
-	}
-	return nil
 }
 
 // Stop stops the etcd server and shuts down the HTTP servers, at most once and

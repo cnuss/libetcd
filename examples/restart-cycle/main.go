@@ -11,7 +11,7 @@
 //     builder's initial-cluster string and cluster state.
 //   - The peer (raft) address — the cluster's membership stores each member's
 //     advertised peer URL and other members dial it, so each generation binds
-//     a listener on the same address and passes it via WithPeerServing. The
+//     a listener on the same address and passes it via WithPeerListener. The
 //     first generation binds 127.0.0.1:0 to claim a free port; later
 //     generations re-bind the recorded address (retrying briefly while the
 //     previous generation's listener finishes closing).
@@ -72,8 +72,8 @@ func main() {
 	nodeA := libetcd.New().
 		WithName(members[0].name).
 		WithDir(members[0].dir).
-		WithPeerServing(a0Peer, nil).
-		WithClientServing(a0Client, nil)
+		WithPeerListener(a0Peer).
+		WithClientListener(a0Client)
 	if err := nodeA.Start(); err != nil {
 		log.Fatalf("node-a Start: %v", err)
 	}
@@ -81,8 +81,8 @@ func main() {
 	nodeB := libetcd.From(nodeA.Peers()...).
 		WithName(members[1].name).
 		WithDir(members[1].dir).
-		WithPeerServing(b0Peer, nil).
-		WithClientServing(b0Client, nil)
+		WithPeerListener(b0Peer).
+		WithClientListener(b0Client)
 	if err := nodeB.Join(); err != nil {
 		log.Fatalf("node-b Join: %v", err)
 	}
@@ -126,8 +126,8 @@ func startGeneration(members []member) []v1.Etcd {
 		nodes[i] = libetcd.New().
 			WithName(m.name).
 			WithDir(m.dir).
-			WithPeerServing(relisten(m.peerAddr), nil).
-			WithClientServing(relisten(m.clientAddr), nil)
+			WithPeerListener(relisten(m.peerAddr)).
+			WithClientListener(relisten(m.clientAddr))
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, len(nodes))

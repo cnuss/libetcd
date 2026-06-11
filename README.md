@@ -85,7 +85,7 @@ func main() {
 	peers := []string{"10.0.0.1:2380", "http://10.0.0.2:2380"}
 
 	// A remote cluster must be able to dial this node back: the peer
-	// listener's address is what Join advertises. Without WithPeerServing the
+	// listener's address is what Join advertises. Without WithPeerListener the
 	// node auto-binds a loopback port, which only works when the whole
 	// cluster runs on this host — Join rejects that combination for remote
 	// peers.
@@ -94,7 +94,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	node := libetcd.From(peers...).WithPeerServing(lis, nil).WithContext(ctx)
+	node := libetcd.From(peers...).WithPeerListener(lis).WithContext(ctx)
 	if err := node.Join(); err != nil {
 		log.Fatal(err)
 	}
@@ -138,7 +138,7 @@ What a restart must hold constant:
   boot. The name and client URLs are republished from the new config.
 - **The peer (raft) address, on multi-member clusters.** The membership stores
   each member's advertised peer URL and the other members dial it: bind a
-  listener on the original address and pass it via `WithPeerServing` on every
+  listener on the original address and pass it via `WithPeerListener` on every
   restart (bind `127.0.0.1:0` the first time, record the port). Pin the client
   address the same way if anything dials the member's registered client URL.
   A single-member cluster can let `Start` auto-bind fresh ports.
@@ -195,8 +195,8 @@ type Builder[T any] interface {
     WithClusterToken(token string) T       // initial-cluster token; default "etcd-cluster"
     WithLog(level string, w io.Writer) T   // route logs to w at level; silent by default
     WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
-    WithClientServing(l net.Listener, srv *http.Server) T // client listener + server (v3 API)
-    WithPeerServing(l net.Listener, srv *http.Server) T   // peer listener + server; raft + app share a port
+    WithClientListener(l net.Listener) T   // client (v3 API) socket; nil = headless (no client serving/URLs)
+    WithPeerListener(l net.Listener) T     // peer (raft) socket; nil is a config error
 }
 
 // Executor — lifecycle.
@@ -213,9 +213,9 @@ type Server interface {
     PeerHandler() http.Handler       // raft peer protocol handler
     ClientHTTP() *http.Server        // client http.Server (provided or default)
     PeerHTTP() *http.Server          // peer http.Server (provided or default)
-    ClientListener() net.Listener    // listener set via WithClientServing, or nil
-    PeerListener() net.Listener      // listener set via WithPeerServing, or nil
-    PeerPaths() []string             // raft path prefixes (muxed onto PeerHandler by WithPeerServing)
+    ClientListener() net.Listener    // materialized client listener (nil when headless)
+    PeerListener() net.Listener      // materialized peer listener
+    PeerPaths() []string             // raft path prefixes (mount PeerHandler here to self-serve raft)
 }
 
 // Client — clientv3 clients to the cluster.
