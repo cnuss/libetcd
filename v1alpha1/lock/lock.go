@@ -22,8 +22,10 @@ const keyPrefix = "libetcd/lock/"
 // lease expires and another waiter can take it.
 const sessionTTL = 30
 
-// releaseTimeout caps the unlock + session-close on Release so a wedged cluster
-// can't block teardown indefinitely.
+// releaseTimeout caps the unlock step of Release so a wedged cluster can't
+// block teardown indefinitely. The session close that follows is bounded
+// separately: its lease revoke is capped at sessionTTL by the etcd client
+// (past the TTL the lease has expired anyway).
 const releaseTimeout = 5 * time.Second
 
 // Lock is a held distributed lock. Release it when done.
@@ -36,7 +38,12 @@ type Lock struct {
 // cli, or ctx is done (returning its error). It makes a single attempt; callers
 // that must ride out transient cluster unavailability should retry Acquire.
 func Acquire(ctx context.Context, cli *clientv3.Client, name string) (*Lock, error) {
-	sess, err := concurrency.NewSession(cli, concurrency.WithContext(ctx), concurrency.WithTTL(sessionTTL))
+	// The session deliberately rides the client's own context, not ctx: its
+	// lifetime must match the lock, not the acquire call, so Release can still
+	// revoke the lease after ctx is cancelled (e.g. a deferred Release after a
+	// deadline-failed join). Crash safety is unchanged — if the process dies
+	// without Release, keepalives stop and the lease expires after sessionTTL.
+	sess, err := concurrency.NewSession(cli, concurrency.WithTTL(sessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("lock %q: new session: %w", name, err)
 	}
@@ -49,8 +56,9 @@ func Acquire(ctx context.Context, cli *clientv3.Client, name string) (*Lock, err
 }
 
 // Release unlocks and closes the underlying session, returning the first error.
-// It uses a fresh bounded context so it still releases even if the context that
-// took the lock is already cancelled.
+// It works even if the context that took the lock is already cancelled: the
+// unlock runs on a fresh bounded context, and the session (which rides the
+// client's context, not the acquire one) can still revoke its lease.
 func (l *Lock) Release() error {
 	ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
 	defer cancel()

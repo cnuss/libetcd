@@ -92,6 +92,27 @@ func TestMutualExclusion(t *testing.T) {
 	}
 }
 
+// TestReleaseAfterAcquireCtxCancelled checks Release succeeds — unlock and
+// lease revoke included — after the context that acquired the lock has died.
+// This is the deferred-Release-after-deadline-failed-join path: the session
+// must outlive the acquisition context or Close fails instantly and abandons
+// the lease to its TTL.
+func TestReleaseAfterAcquireCtxCancelled(t *testing.T) {
+	cli := testClient(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	l, err := lock.Acquire(ctx, cli, "z")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	cancel() // acquisition ctx is now dead, as after a timed-out join
+
+	if err := l.Release(); err != nil {
+		t.Errorf("Release after acquisition ctx cancelled: %v", err)
+	}
+}
+
 // TestAcquireContextDeadline checks Acquire honors its context: a contender with
 // a deadline gives up (returns an error) rather than blocking forever on a held
 // lock.
