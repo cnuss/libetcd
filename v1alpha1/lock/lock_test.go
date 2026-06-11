@@ -53,26 +53,51 @@ func TestAcquireReleaseKey(t *testing.T) {
 // lock is held and proceeds once it's released.
 func TestMutualExclusion(t *testing.T) {
 	cli := testClient(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	first, err := lock.Acquire(ctx, cli, "x")
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
 
-	acquired := make(chan *lock.Lock, 1)
+	// No t.Errorf/t.Fatalf inside the goroutine — it could fire after the test
+	// has completed and panic the binary. Send the outcome over a (buffered)
+	// channel and assert from the test goroutine instead.
+	type result struct {
+		l   *lock.Lock
+		err error
+	}
+	acquired := make(chan result, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		l, err := lock.Acquire(ctx, cli, "x")
-		if err != nil {
-			t.Errorf("second Acquire: %v", err)
-			return
+		acquired <- result{l, err}
+	}()
+	// Join the contender on every exit path: cancel its Acquire, wait for the
+	// goroutine to finish, and release any lock it won before the node stops.
+	defer func() {
+		cancel()
+		<-done
+		select {
+		case r := <-acquired:
+			if r.l != nil {
+				_ = r.l.Release()
+			}
+		default:
 		}
-		acquired <- l
 	}()
 
 	// The contender must not get the lock while first holds it.
 	select {
-	case <-acquired:
+	case r := <-acquired:
+		if r.l != nil {
+			_ = r.l.Release()
+		}
+		if r.err != nil {
+			t.Fatalf("second Acquire: %v", r.err)
+		}
 		t.Fatal("second Acquire succeeded while the lock was held")
 	case <-time.After(500 * time.Millisecond):
 	}
@@ -83,8 +108,11 @@ func TestMutualExclusion(t *testing.T) {
 
 	// Now it should proceed promptly.
 	select {
-	case l := <-acquired:
-		if err := l.Release(); err != nil {
+	case r := <-acquired:
+		if r.err != nil {
+			t.Fatalf("second Acquire: %v", r.err)
+		}
+		if err := r.l.Release(); err != nil {
 			t.Errorf("release second: %v", err)
 		}
 	case <-time.After(5 * time.Second):
