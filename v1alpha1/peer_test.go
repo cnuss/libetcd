@@ -1,6 +1,9 @@
 package v1alpha1
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestSanitizePeers covers the normalization From applies to a caller's peer
 // URLs: trim, drop-empty, default-scheme, dedup, the preserved first-seen
@@ -56,13 +59,8 @@ func TestSanitizePeers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := sanitizePeers(tc.in)
-			if len(got) != len(tc.want) {
+			if !slices.Equal(got, tc.want) {
 				t.Fatalf("sanitizePeers(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("sanitizePeers(%q) = %q, want %q", tc.in, got, tc.want)
-				}
 			}
 		})
 	}
