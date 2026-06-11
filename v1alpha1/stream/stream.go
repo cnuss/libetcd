@@ -27,15 +27,31 @@ import (
 	"go.uber.org/zap"
 )
 
-// Handler wraps a peer (raft) handler so that, on the /raft/stream path only, the
-// long-lived stream's success status is rewritten from 200 OK to 206 Partial
-// Content — the serve-side half of issue #8. The stream handler is the sole 200
-// on the peer mux; pipeline writes 204 and /members, /version, lease, etc. return
-// real 200+body that must pass through untouched, hence the path scope. The dial
-// side (Intercept) rewrites the 206 back to 200 before the stock reader.
+// acceptHeader/acceptValue negotiate the 206 rewrite. The dial side (accept206)
+// stamps the header on stream dials it can translate back; the serve side
+// (Handler) rewrites 200 → 206 only for requests carrying it. A dialer without
+// the interceptor — stock etcd, or a libetcd node whose reader fires its first
+// dial before Intercept's swap lands — therefore gets a stock 200 stream
+// instead of a 206 it would fatally mishandle: etcd's streamReader.dial treats
+// 206 as an unhandled status and drains the response body via
+// httputil.GracefulClose, and a raft stream body never ends, so that reader
+// goroutine would hang forever and the peer link never form.
+const (
+	acceptHeader = "X-Libetcd-Stream"
+	acceptValue  = "206"
+)
+
+// Handler wraps a peer (raft) handler so that, on the /raft/stream path only and
+// only for dialers that negotiated it (acceptHeader), the long-lived stream's
+// success status is rewritten from 200 OK to 206 Partial Content — the serve-side
+// half of issue #8. The stream handler is the sole 200 on the peer mux; pipeline
+// writes 204 and /members, /version, lease, etc. return real 200+body that must
+// pass through untouched, hence the path scope. The dial side (Intercept)
+// rewrites the 206 back to 200 before the stock reader.
 func Handler(inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, rafthttp.RaftStreamPrefix) {
+		if strings.HasPrefix(r.URL.Path, rafthttp.RaftStreamPrefix) &&
+			r.Header.Get(acceptHeader) == acceptValue {
 			w = &statusRewriter{ResponseWriter: w}
 		}
 		inner.ServeHTTP(w, r)
@@ -62,13 +78,18 @@ func (w *statusRewriter) Flush() {
 	}
 }
 
-// accept206 is the dial-side counterpart to statusRewriter: it rewrites a 206 on
-// the raft stream path back to 200 just as the response arrives, so etcd's
-// streamReader.dial — which switches only on 200 — accepts it, while the wire
-// still carried 206 for a buffering intermediary.
+// accept206 is the dial-side counterpart to statusRewriter. On raft stream
+// dials it stamps acceptHeader — telling the serving peer this dialer can
+// translate a 206 — and rewrites the 206 that comes back to 200 just as the
+// response arrives, so etcd's streamReader.dial — which switches only on 200 —
+// accepts it, while the wire still carried 206 for a buffering intermediary.
 type accept206 struct{ inner http.RoundTripper }
 
 func (s accept206) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasPrefix(req.URL.Path, rafthttp.RaftStreamPrefix) {
+		req = req.Clone(req.Context()) // RoundTrippers must not mutate the caller's request
+		req.Header.Set(acceptHeader, acceptValue)
+	}
 	resp, err := s.inner.RoundTrip(req)
 	if err == nil && resp != nil &&
 		resp.StatusCode == http.StatusPartialContent &&

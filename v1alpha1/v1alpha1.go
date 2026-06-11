@@ -131,6 +131,6 @@ func newImpl() *EtcdImpl {
 // From returns a join-only builder for a node that will join the cluster
 // reachable at the given peer URLs. Configure it with the With* methods, then
 // call Join; see peerJoiner.
-func From(peers v1.Peers) v1.EtcdPeer {
+func From(peers ...string) v1.EtcdPeer {
 	return &peerJoiner{EtcdImpl: newImpl(), peers: peers}
 }

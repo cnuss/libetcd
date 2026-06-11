@@ -70,26 +70,20 @@ package main
 import (
 	"context"
 	"log"
-	"net/url"
 
 	"github.com/cnuss/libetcd"
-	v1 "github.com/cnuss/libetcd/v1"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Peer URLs of members already in the cluster.
-	var peers v1.Peers
-	for _, raw := range []string{"http://10.0.0.1:2380", "http://10.0.0.2:2380"} {
-		u, err := url.Parse(raw)
-		if err != nil {
-			log.Fatal(err)
-		}
-		peers = append(peers, u)
-	}
+	// Peer (raft) URLs of members already in the cluster. Plain strings —
+	// bare host:port, http://, or https:// all work; From normalizes them and
+	// drops any it can't parse. A hardcoded list here; in practice from config
+	// or another node's Peers().
+	peers := []string{"10.0.0.1:2380", "http://10.0.0.2:2380"}
 
-	node := libetcd.From(peers).WithContext(ctx)
+	node := libetcd.From(peers...).WithContext(ctx)
 	if err := node.Join(); err != nil {
 		log.Fatal(err)
 	}
@@ -99,7 +93,11 @@ func main() {
 }
 ```
 
-(Full source: [`examples/join-from-peers/main.go`](./examples/join-from-peers/main.go).)
+Joins are safe to run concurrently — `Join` serializes membership changes
+through a lock held in the target cluster, so several nodes (even in separate
+processes) can call it at once. Working examples:
+[`examples/multi-node/main.go`](./examples/multi-node/main.go) (one join),
+[`examples/async-join/main.go`](./examples/async-join/main.go) (three at once).
 
 ## Layout
 
@@ -126,7 +124,7 @@ For the file-by-file map, see
 
 ```go
 func New() Etcd                 // a fresh, startable node
-func From(peers Peers) EtcdPeer // a node that joins the cluster at those peer URLs
+func From(peers ...string) EtcdPeer // a node that joins the cluster at those peer URLs
 
 type Etcd interface {
     Server        // server-side handles
@@ -150,7 +148,6 @@ type Builder[T any] interface {
 type Executor interface {
     Start() error                      // mint + start; auto-binds any unset listener; serves HTTP
     Stop() error                       // best-effort, idempotent shutdown
-    Join(with Client) error            // join an existing cluster (managed: learner -> promote)
 }
 
 // Server — server-side handles, minted lazily and cached.
@@ -171,43 +168,46 @@ type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
     Voters() *clientv3.Client  // networked client (dials voting members)
-    Peers() Peers              // members' peer (raft) URLs; feed to From
+    Peers() []string           // members' peer (raft) URLs; feed to From
 }
 ```
 
 `EtcdPeer` (from `From`) is a join-only node: the `Client` accessors and `Builder`
-setters (chaining back to `EtcdPeer`), plus `Join` — but no `Start`.
+setters (chaining back to `EtcdPeer`), plus `Join`/`Stop` — but no `Start`.
+`From(...).Join()` is the only way to join an existing cluster.
 
 ```go
 // EtcdPeer — join an existing cluster from a list of peer URLs.
 type EtcdPeer interface {
     Client            // Self / Leader / Voters / Peers
     Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
-    Join() error      // discover a client endpoint via the peers' /members, add as
-                      // learner, seed from a leader snapshot, promote to voting
+    Join() error      // discover a client endpoint via the peers' /members, take the
+                      // cluster join lock, add as learner, start, promote to voting;
+                      // rolls back the half-joined member on failure
+    Stop() error      // best-effort, idempotent shutdown
 }
-
-type Peers []*url.URL // member peer (raft) URLs
 ```
+
+Peer URLs are plain strings — bare `host:port`, `http://`, or `https://`
+entries all work. At `Join` time `From` trims them, defaults a missing scheme
+to `http`, de-duplicates, and silently drops any it can't parse.
 
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
 
-| Example           | Demonstrates                                                     |
-| ----------------- | --------------------------------------------------------------- |
-| `single-node`     | Start a node (defaults everything), `Put`/`Get`, `Stop`.        |
-| `multi-node`      | Bring up a node, `Join` a second to it, read the replicated key. |
-| `join-from-peers` | Join a node to a cluster from peer URLs via `From(...).Join()`.  |
-| `load-test`       | Grow a cluster under read/write load for 30s; print throughput + latency. |
+| Example       | Demonstrates                                                          |
+| ------------- | --------------------------------------------------------------------- |
+| `single-node` | Start a node (defaults everything), `Put`/`Get`, `Stop`.              |
+| `multi-node`  | Bring up a node, `Join` a second to it, read the replicated key.      |
+| `async-join`  | Grow a cluster with concurrent `From(...).Join()` calls; verify every joiner's write survives. |
 
 Run one locally:
 
 ```sh
 make run single-node
 make run multi-node
-make run join-from-peers
-make run load-test
+make run async-join
 ```
 
 ## Testing

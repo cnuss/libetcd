@@ -6,10 +6,18 @@ import (
 	"net/url"
 	"time"
 
-	v1 "github.com/cnuss/libetcd/v1"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
+	"go.uber.org/zap"
 )
+
+// Logger returns the zap logger the node is configured with (the one wired up
+// by WithLog, or the silent default). Read under the config mutex.
+func (b *EtcdImpl) Logger() *zap.Logger {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cfg.GetLogger()
+}
 
 // Self returns an in-process clientv3.Client wired to this node's minted server
 // (via v3client), minted at most once. Returns nil if the server can't be
@@ -55,13 +63,10 @@ func (b *EtcdImpl) Leader() *clientv3.Client {
 		return nil
 	}
 
-	b.mu.Lock()
-	lg := b.cfg.GetLogger()
-	b.mu.Unlock()
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   leader,
 		DialTimeout: 5 * time.Second,
-		Logger:      lg,
+		Logger:      b.Logger(),
 	})
 	if err != nil {
 		return nil
@@ -78,7 +83,6 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 	b.mu.Lock()
 	cause := context.Cause(b.ctx)
 	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls) // fallback: self
-	lg := b.cfg.GetLogger()
 	b.mu.Unlock()
 
 	if cause != nil {
@@ -107,9 +111,7 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   eps,
 		DialTimeout: 5 * time.Second,
-		// Use the server's configured logger so the client honors WithLog
-		// (silent by default) instead of clientv3's default warn-level logger.
-		Logger: lg,
+		Logger:      b.Logger(),
 	})
 	if err != nil {
 		b.cancel(fmt.Errorf("dial client: %w", err))
@@ -123,27 +125,27 @@ func (b *EtcdImpl) Voters() *clientv3.Client {
 // The list is what From consumes to join a node to this cluster (it scrapes each
 // peer's /members handler). Returns an empty slice if the server can't be minted
 // or the member list is unavailable.
-func (b *EtcdImpl) Peers() v1.Peers {
+func (b *EtcdImpl) Peers() []string {
 	self := b.Self()
 	if self == nil {
-		return v1.Peers{}
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 	defer cancel()
 
 	ml, err := self.MemberList(ctx)
 	if err != nil {
-		return v1.Peers{}
+		return nil
 	}
 
-	peers := v1.Peers{}
+	peers := []string{}
 	for _, m := range ml.Members {
 		for _, u := range m.PeerURLs {
 			parsed, err := url.Parse(u)
 			if err != nil {
 				continue // skip a member with unparseable peer URLs
 			}
-			peers = append(peers, parsed)
+			peers = append(peers, parsed.String())
 		}
 	}
 	return peers

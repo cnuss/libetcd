@@ -56,8 +56,9 @@ func TestStopIdempotent(t *testing.T) {
 	}
 }
 
-// TestJoin brings up a node, joins a second one to it, and reads the replicated
-// key from the joiner — exercising the full learner-add → promote → voting flow.
+// TestJoin brings up a node, joins a second one to it from its peer URLs, and
+// reads the replicated key from the joiner — exercising the full learner-add →
+// promote → voting flow on the single From(...).Join() path.
 func TestJoin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -73,9 +74,9 @@ func TestJoin(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	e2 := v1alpha1.New()
+	e2 := v1alpha1.From(e1.Peers()...)
 	e2.WithDir(t.TempDir()).WithContext(ctx)
-	if err := e2.Join(e1); err != nil {
+	if err := e2.Join(); err != nil {
 		t.Fatalf("node2 Join: %v", err)
 	}
 	defer e2.Stop()

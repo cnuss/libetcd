@@ -29,9 +29,9 @@ func main() {
 
 	printMembers(ctx, "before join", cli)
 
-	// Node 2: join the cluster via node 1's client — fully managed.
-	e2 := libetcd.New().WithContext(ctx)
-	if err := e2.Join(e1); err != nil {
+	// Node 2: join the cluster from node 1's peer URLs — fully managed.
+	e2 := libetcd.From(e1.Peers()...).WithContext(ctx)
+	if err := e2.Join(); err != nil {
 		log.Fatal(err)
 	}
 

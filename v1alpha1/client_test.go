@@ -13,10 +13,8 @@ func TestPeers(t *testing.T) {
 		t.Fatalf("Peers: got %d entries, want 1: %v", len(peers), peers)
 	}
 	for _, u := range peers {
-		if u == nil {
-			t.Error("Peers: nil URL entry")
-		} else if u.String() == "" {
-			t.Error("Peers: empty URL")
+		if u == "" {
+			t.Error("Peers: empty URL entry")
 		}
 	}
 }
