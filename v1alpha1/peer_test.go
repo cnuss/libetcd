@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -113,12 +114,24 @@ func TestJoinFailsFastOnLatchedConfigError(t *testing.T) {
 // mints the server from the bootstrap config, which Join's config mutations
 // can no longer reach; Join must reject the handle instead of failing slow.
 func TestJoinFailsFastWhenServerMinted(t *testing.T) {
+	// Not t.TempDir(): a minted-but-never-started server holds its WAL open
+	// until process exit (the deferred WAL close lives in run(), which never
+	// starts; Stop's Cleanup path doesn't reach it), and Windows can't delete
+	// open files — t.TempDir's cleanup would fail the test. Best-effort
+	// removal instead.
+	dir, err := os.MkdirTemp("", "libetcd-minted-")
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := From("10.0.0.1:2380")
-	p.WithDir(t.TempDir())
-	t.Cleanup(func() { _ = p.Stop() })
+	p.WithDir(dir)
+	t.Cleanup(func() {
+		_ = p.Stop()
+		_ = os.RemoveAll(dir)
+	})
 	_ = p.Self() // accessor mints the server pre-Join
 
-	err := p.Join()
+	err = p.Join()
 	if err == nil || !strings.Contains(err.Error(), "already minted") {
 		t.Fatalf("Join = %v, want already-minted error", err)
 	}
