@@ -8,7 +8,10 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/cnuss/libetcd/v1alpha1/join"
+	"github.com/cnuss/libetcd/v1alpha1/lock"
 	"github.com/cnuss/libetcd/v1alpha1/stream"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
@@ -149,31 +152,46 @@ func (b *EtcdImpl) PeerListener() net.Listener {
 	return b.peerListener
 }
 
-// PeerHandler returns an http.Handler serving the peer (raft) protocol for the
-// minted server, or nil if the server can't be minted.
+// PeerHandler returns an http.Handler serving the peer (raft) protocol plus the
+// libetcd join resource for the minted server, or nil if the server can't be
+// minted.
 func (b *EtcdImpl) PeerHandler() http.Handler {
 	srv := b.Server()
 	if srv == nil {
 		return nil
 	}
 	b.mu.Lock()
-	lg := b.cfg.GetLogger()
+	lg, token := b.cfg.GetLogger(), b.cfg.InitialClusterToken
 	b.mu.Unlock()
+
+	handler := etcdhttp.NewPeerHandler(lg, srv).(*http.ServeMux)
+	js := &join.Server{
+		Self:  b.Self,
+		Token: token,
+		Acquire: func(ctx context.Context, cli *clientv3.Client) (func() error, error) {
+			lk, err := lock.Acquire(ctx, cli, "peer-join")
+			if err != nil {
+				return nil, err
+			}
+			return lk.Release, nil
+		},
+		Logger: lg,
+	}
+	handler.Handle(join.Path, js)
 	// Wrap so the raft stream's success status goes out as 206 on the wire; the
 	// dial side (stream.Intercept, called from Server) rewrites it back to 200
 	// before the stock reader. See package stream (issue #8).
-	return stream.Handler(etcdhttp.NewPeerHandler(lg, srv))
+	return stream.Handler(handler)
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —
-// the same set etcdhttp.NewPeerHandler registers: raft messages, membership,
-// lease forwarding, version, and downgrade. Callers serving the peer protocol
-// on their own server can use it to mount PeerHandler on the same set.
+// the set etcdhttp.NewPeerHandler registers (raft messages, membership, lease
+// forwarding, version, downgrade) plus the libetcd join resource.
 //
 // This list is hand-maintained against etcd's peer mux; if a future etcd version
 // adds a peer route, add it here too.
 func (b *EtcdImpl) PeerPaths() []string {
-	return []string{
+	paths := []string{
 		rafthttp.RaftPrefix, rafthttp.RaftPrefix + "/",
 		"/members", "/members/promote/",
 		leasehttp.LeasePrefix, leasehttp.LeaseInternalPrefix,
@@ -181,6 +199,7 @@ func (b *EtcdImpl) PeerPaths() []string {
 		etcdserver.PeerHashKVPath,
 		"/version",
 	}
+	return append(paths, join.Paths()...)
 }
 
 // ClientHandler returns an http.Handler serving the etcd v3 client API for the
