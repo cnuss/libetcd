@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 
+	"github.com/cnuss/libetcd/v1alpha1/join"
+	"github.com/cnuss/libetcd/v1alpha1/lock"
 	"github.com/cnuss/libetcd/v1alpha1/stream"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
@@ -26,6 +30,12 @@ import (
 // underlying error is latched as the builder context cause.
 func (b *EtcdImpl) Server() *etcdserver.EtcdServer {
 	b.serverOnce.Do(func() {
+		// Materialize the listeners before the config is read: minting bakes
+		// the advertise URLs into the server, so the factories must have run
+		// (binding sockets and deriving URLs) by now. Headless sides stay nil.
+		b.ClientListener()
+		b.PeerListener()
+
 		// Default an unset data dir to a temp dir named for the node, so a node
 		// minted without WithDir doesn't land on a relative/shared path.
 		b.mu.Lock()
@@ -81,46 +91,117 @@ func (b *EtcdImpl) GrpcServer() *grpc.Server {
 	return b.grpcSrv
 }
 
-// ClientListener returns the listener set by WithClientServing, or nil.
+// ClientListener materializes and returns the client listener: on first call
+// it invokes the client listener factory (binding the auto-bind default or
+// handing out the WithClientListener socket) and derives the client
+// listen/advertise URLs from its address. Nil when the client side is headless
+// (WithClientListener(nil) cleared the factory) or the factory failed (the
+// error is latched as the config cause).
 func (b *EtcdImpl) ClientListener() net.Listener {
+	b.clientListenerOnce.Do(func() {
+		b.clientListenerMaterialized.Store(true)
+		b.mu.Lock()
+		f, latched := b.clientListenerFactory, context.Cause(b.ctx)
+		b.mu.Unlock()
+		// A latched config error makes the mutate below a no-op, so binding now
+		// would leak the socket (never stored, never closed). Don't bind.
+		if f == nil || latched != nil {
+			return
+		}
+		lis, err := f()
+		if err != nil {
+			b.cancel(fmt.Errorf("client listener: %w", err))
+			return
+		}
+		b.mutate(func() error {
+			b.clientListener = lis
+			u := listenerURL(lis)
+			b.cfg.ListenClientUrls = []url.URL{u}
+			b.cfg.AdvertiseClientUrls = []url.URL{u}
+			return nil
+		})
+	})
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.clientListener
 }
 
-// PeerListener returns the listener set by WithPeerServing, or nil.
+// PeerListener materializes and returns the peer listener, exactly as
+// ClientListener does for the client side. Nil only when the factory failed
+// (latched as the config cause) — the peer side cannot be turned off.
 func (b *EtcdImpl) PeerListener() net.Listener {
+	b.peerListenerOnce.Do(func() {
+		b.peerListenerMaterialized.Store(true)
+		b.mu.Lock()
+		f, latched := b.peerListenerFactory, context.Cause(b.ctx)
+		b.mu.Unlock()
+		// See ClientListener: don't bind into a latched (no-op mutate) config.
+		if f == nil || latched != nil {
+			return
+		}
+		lis, err := f()
+		if err != nil {
+			b.cancel(fmt.Errorf("peer listener: %w", err))
+			return
+		}
+		b.mutate(func() error {
+			b.peerListener = lis
+			u := listenerURL(lis)
+			b.cfg.ListenPeerUrls = []url.URL{u}
+			b.cfg.AdvertisePeerUrls = []url.URL{u}
+			return nil
+		})
+	})
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.peerListener
 }
 
-// PeerHandler returns an http.Handler serving the peer (raft) protocol for the
-// minted server, or nil if the server can't be minted.
+// PeerHandler returns an http.Handler serving the peer (raft) protocol plus the
+// libetcd join resource for the minted server, or nil if the server can't be
+// minted.
 func (b *EtcdImpl) PeerHandler() http.Handler {
 	srv := b.Server()
 	if srv == nil {
 		return nil
 	}
 	b.mu.Lock()
-	lg := b.cfg.GetLogger()
+	lg, token := b.cfg.GetLogger(), b.cfg.InitialClusterToken
 	b.mu.Unlock()
+
+	js := &join.Server{
+		Self:  b.Self,
+		Token: token,
+		Acquire: func(ctx context.Context, cli *clientv3.Client) (func() error, error) {
+			lk, err := lock.Acquire(ctx, cli, "peer-join")
+			if err != nil {
+				return nil, err
+			}
+			return lk.Release, nil
+		},
+		Logger: lg,
+	}
+	// etcdhttp.NewPeerHandler promises only http.Handler, so mount it under our
+	// own mux rather than type-asserting it to *http.ServeMux (which would panic
+	// if a future etcd version changed the type). The join resource takes its
+	// own path; everything else falls through to the etcd peer handler.
+	mux := http.NewServeMux()
+	mux.Handle(join.Path, js)
+	mux.Handle("/", etcdhttp.NewPeerHandler(lg, srv))
 	// Wrap so the raft stream's success status goes out as 206 on the wire; the
 	// dial side (stream.Intercept, called from Server) rewrites it back to 200
 	// before the stock reader. See package stream (issue #8).
-	return stream.Handler(etcdhttp.NewPeerHandler(lg, srv))
+	return stream.Handler(mux)
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —
-// the same set etcdhttp.NewPeerHandler registers: raft messages, membership,
-// lease forwarding, version, and downgrade. PeerHTTP routes these to PeerHandler
-// when WithPeerServing was given a server carrying its own handler, so raft and
-// the application's routes can share one listener.
+// the set etcdhttp.NewPeerHandler registers (raft messages, membership, lease
+// forwarding, version, downgrade) plus the libetcd join resource.
 //
 // This list is hand-maintained against etcd's peer mux; if a future etcd version
 // adds a peer route, add it here too.
 func (b *EtcdImpl) PeerPaths() []string {
-	return []string{
+	paths := []string{
 		rafthttp.RaftPrefix, rafthttp.RaftPrefix + "/",
 		"/members", "/members/promote/",
 		leasehttp.LeasePrefix, leasehttp.LeaseInternalPrefix,
@@ -128,6 +209,7 @@ func (b *EtcdImpl) PeerPaths() []string {
 		etcdserver.PeerHashKVPath,
 		"/version",
 	}
+	return append(paths, join.Paths()...)
 }
 
 // ClientHandler returns an http.Handler serving the etcd v3 client API for the
@@ -135,7 +217,7 @@ func (b *EtcdImpl) PeerPaths() []string {
 // serveClients: a v3rpc gRPC server (with election and lock services) wrapped as
 // an HTTP/2 handler.
 //
-// When a cleartext client listener was provided (WithClientServing, non-TLS),
+// When a cleartext client listener materialized (WithClientListener, non-TLS),
 // the REST/JSON grpc-gateway is also wired — backed by a lazy gRPC connection to
 // that listener's address — and multiplexed with gRPC, and the result is h2c-
 // wrapped so a plaintext listener serves HTTP/2. A TLS listener gets the gRPC-
@@ -169,23 +251,20 @@ func (b *EtcdImpl) ClientHandler() http.Handler {
 	return handler
 }
 
-// ClientHTTP returns the http.Server for the client (v3 API) listener, resolved
-// at most once: the one supplied to WithClientServing, or a default whose Handler
-// is ClientHandler. A supplied server with no Handler is given ClientHandler; one
-// that carries its own Handler is served as-is (no path-mux — see WithClientServing).
+// ClientHTTP resolves (at most once) and returns the http.Server libetcd
+// serves the client (v3 API) listener with: the client http factory's output,
+// whose Handler is ClientHandler. Nil when the side's factory is nil (headless
+// client side — nothing to serve). Resolving the handler mints the server, so
+// Start calls this after the listeners have materialized.
 func (b *EtcdImpl) ClientHTTP() *http.Server {
 	b.clientHTTPOnce.Do(func() {
 		b.mu.Lock()
-		srv := b.clientHTTP
+		f := b.clientHTTPFactory
 		b.mu.Unlock()
-
-		switch {
-		case srv == nil:
-			srv = &http.Server{Handler: b.ClientHandler()}
-		case srv.Handler == nil:
-			srv.Handler = b.ClientHandler()
+		if f == nil {
+			return
 		}
-
+		srv := f()
 		b.mu.Lock()
 		b.clientHTTP = srv
 		b.mu.Unlock()
@@ -195,38 +274,19 @@ func (b *EtcdImpl) ClientHTTP() *http.Server {
 	return b.clientHTTP
 }
 
-// PeerHTTP returns the http.Server for the peer (raft) listener, resolved at
-// most once: the one supplied to WithPeerServing, or a default whose Handler is
-// PeerHandler.
-//
-// When the supplied server carries its own Handler (an application sharing the
-// peer port), the raft PeerPaths are muxed onto PeerHandler and everything else
-// falls through to that handler, so raft keeps working alongside it. Resolving
-// the handler mints the server, so this must be called after Start has bound the
-// listeners (Start calls it); calling it earlier freezes the config.
+// PeerHTTP resolves (at most once) and returns the http.Server libetcd serves
+// the peer (raft) listener with: the peer http factory's output, whose Handler
+// is PeerHandler. Resolving the handler mints the server, so Start calls this
+// after the listeners have materialized.
 func (b *EtcdImpl) PeerHTTP() *http.Server {
 	b.peerHTTPOnce.Do(func() {
 		b.mu.Lock()
-		srv := b.peerHTTP
+		f := b.peerHTTPFactory
 		b.mu.Unlock()
-
-		ph := b.PeerHandler()
-		switch {
-		case srv == nil:
-			srv = &http.Server{Handler: ph}
-		case srv.Handler == nil:
-			srv.Handler = ph
-		default:
-			// Application handler on the peer port: route raft paths to the peer
-			// handler, everything else to the supplied handler.
-			mux := http.NewServeMux()
-			for _, p := range b.PeerPaths() {
-				mux.Handle(p, ph)
-			}
-			mux.Handle("/", srv.Handler)
-			srv.Handler = mux
+		if f == nil {
+			return
 		}
-
+		srv := f()
 		b.mu.Lock()
 		b.peerHTTP = srv
 		b.mu.Unlock()

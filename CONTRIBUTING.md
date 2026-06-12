@@ -18,8 +18,9 @@ Deep-link by filename; line numbers will drift.
 | Client accessors (`Self`/`Leader`/`Voters`/`Peers`) | [`v1alpha1/client.go`](./v1alpha1/client.go)               |
 | Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
 | Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v1alpha1/peer.go`](./v1alpha1/peer.go)                         |
+| Peer-port join protocol (`/libetcd/v1/join`)   | [`v1alpha1/join/`](./v1alpha1/join)                              |
 | Cross-process join lock (etcd lease + mutex)   | [`v1alpha1/lock/`](./v1alpha1/lock)                              |
-| Snapshot seed fork (unwired; kept for a future seeded join) | [`v1alpha1/snapshot/`](./v1alpha1/snapshot)         |
+| Snapshot seed fork (restores the join snapshot) | [`v1alpha1/snapshot/`](./v1alpha1/snapshot)                     |
 | Raft stream 206 handling (issue #8)            | [`v1alpha1/stream/`](./v1alpha1/stream)                          |
 | gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
 | Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |

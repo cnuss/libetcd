@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 	lp, _ := net.Listen("tcp", "127.0.0.1:0")
 
 	e := v1alpha1.New()
-	e.WithDir(t.TempDir()).WithClientServing(lc, nil).WithPeerServing(lp, nil)
+	e.WithDir(t.TempDir()).WithClientListener(lc).WithPeerListener(lp)
 
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -114,32 +115,16 @@ func httpGet(t *testing.T, addr, path string) string {
 	return string(b)
 }
 
-// TestWithPeerServing exercises the ternary nature of WithPeerServing across the
-// listener {nil, provided} x server {nil, provided} x server-handler {nil,
-// provided} matrix. For each combination it asserts the listener/server are
-// honored and that the peer (raft) protocol stays served — and, when a custom
-// handler is supplied, that raft paths still reach the peer handler while other
-// paths fall through to the supplied handler (the single-port merge).
-func TestWithPeerServing(t *testing.T) {
-	const appBody = "APP-OK"
-	appHandler := func() http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, appBody)
-		})
-	}
-
+// TestWithPeerListener exercises the listener-as-switch states on the peer
+// side: the auto-bind default and a provided listener both end up with the
+// raft protocol served by libetcd on the materialized listener.
+func TestWithPeerListener(t *testing.T) {
 	cases := []struct {
-		name           string
-		provideLis     bool
-		provideSrv     bool
-		provideHandler bool
+		name       string
+		provideLis bool
 	}{
-		{"nil_lis__nil_srv", false, false, false},
-		{"lis__nil_srv", true, false, false},
-		{"nil_lis__srv_no_handler", false, true, false},
-		{"lis__srv_no_handler", true, true, false},
-		{"nil_lis__srv_with_handler", false, true, true},
-		{"lis__srv_with_handler", true, true, true},
+		{"default_autobind", false},
+		{"provided_listener", true},
 	}
 
 	for _, tc := range cases {
@@ -147,29 +132,23 @@ func TestWithPeerServing(t *testing.T) {
 			t.Parallel()
 
 			var lis net.Listener
+			e := v1alpha1.New()
+			e.WithDir(t.TempDir())
 			if tc.provideLis {
 				l, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {
 					t.Fatalf("listen: %v", err)
 				}
 				lis = l
+				e.WithPeerListener(lis)
 			}
-			var srv *http.Server
-			if tc.provideSrv {
-				srv = &http.Server{}
-				if tc.provideHandler {
-					srv.Handler = appHandler()
-				}
-			}
-
-			e := v1alpha1.New()
-			e.WithDir(t.TempDir()).WithPeerServing(lis, srv)
 			if err := e.Start(); err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			defer e.Stop()
 
-			// Listener: the provided one is retained; otherwise Start auto-bound one.
+			// Listener: the provided one is handed out by its factory; otherwise
+			// the default factory auto-bound one at materialization.
 			pl := e.PeerListener()
 			if pl == nil {
 				t.Fatal("PeerListener nil after Start")
@@ -178,13 +157,8 @@ func TestWithPeerServing(t *testing.T) {
 				t.Errorf("PeerListener = %v, want the provided listener", pl.Addr())
 			}
 
-			// Server: the provided one is reused as-is; its Handler is always
-			// resolved to something (raft handler, or the merge mux).
-			if tc.provideSrv && e.PeerHTTP() != srv {
-				t.Error("PeerHTTP did not return the provided server")
-			}
-			if e.PeerHTTP().Handler == nil {
-				t.Error("PeerHTTP server has a nil Handler")
+			if srv := e.PeerHTTP(); srv == nil || srv.Handler == nil {
+				t.Fatal("PeerHTTP server missing or has a nil Handler")
 			}
 
 			// Node is healthy: round-trip a key through the loopback client.
@@ -194,21 +168,88 @@ func TestWithPeerServing(t *testing.T) {
 				t.Fatalf("Put: %v", err)
 			}
 
-			// The peer (raft) protocol is served on the listener in every case:
-			// /version is a PeerPath, so it reaches the peer handler, not the app.
-			addr := pl.Addr().String()
-			if got := httpGet(t, addr, "/version"); got == "" || got == appBody {
-				t.Errorf("/version = %q; want the peer handler's version response", got)
-			}
-
-			// A non-raft path reaches the supplied handler only when one was given.
-			got := httpGet(t, addr, "/__app__")
-			if tc.provideHandler && got != appBody {
-				t.Errorf("/__app__ = %q, want %q (merge should route non-raft paths to the app handler)", got, appBody)
-			}
-			if !tc.provideHandler && got == appBody {
-				t.Errorf("/__app__ = %q with no app handler; peer handler should own all paths", got)
+			// The peer (raft) protocol is served on the listener: /version is a
+			// PeerPath, so it reaches the peer handler.
+			if got := httpGet(t, pl.Addr().String(), "/version"); got == "" {
+				t.Error("/version empty; want the peer handler's version response")
 			}
 		})
+	}
+}
+
+// TestWithPeerListenerNil pins the peer side's no-off rule: a nil peer
+// listener latches a config error (a raft member must advertise a peer URL)
+// and Start surfaces it instead of booting.
+func TestWithPeerListenerNil(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(nil)
+	t.Cleanup(func() { _ = e.Stop() })
+
+	err := e.Start()
+	if err == nil || !strings.Contains(err.Error(), "peer listener cannot be nil") {
+		t.Fatalf("Start = %v, want latched nil-peer-listener config error", err)
+	}
+}
+
+// TestWithClientListenerNil pins the headless client side: no listener bound,
+// nothing served, no client URLs registered — while the in-process Self client
+// still reads and writes the keyspace.
+func TestWithClientListenerNil(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithClientListener(nil)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	if l := e.ClientListener(); l != nil {
+		t.Errorf("ClientListener = %v, want nil on a headless client side", l.Addr())
+	}
+	if srv := e.ClientHTTP(); srv != nil {
+		t.Error("ClientHTTP non-nil on a headless client side; nothing should be served")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cli := e.Self()
+	if cli == nil {
+		t.Fatal("Self nil on a headless node; the in-process client needs no listener")
+	}
+	if _, err := cli.Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put through Self: %v", err)
+	}
+
+	ml, err := cli.MemberList(ctx)
+	if err != nil {
+		t.Fatalf("MemberList: %v", err)
+	}
+	if n := len(ml.Members); n != 1 {
+		t.Fatalf("MemberList = %d members, want 1", n)
+	}
+	if urls := ml.Members[0].ClientURLs; len(urls) != 0 {
+		t.Errorf("headless member registered client URLs %v, want none", urls)
+	}
+}
+
+// TestWithListenerAfterMaterializeErrors: a listener setter called after the
+// listener has materialized (here a headless client side, whose factory ran to
+// a nil result) must latch — the sync.Once is spent, so a later setter could
+// change the advertised URLs without the factory ever binding them.
+func TestWithListenerAfterMaterializeErrors(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithClientListener(nil)
+	if l := e.ClientListener(); l != nil { // materializes the (nil) client side
+		t.Fatalf("ClientListener = %v, want nil", l.Addr())
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close()
+	e.WithClientListener(lis) // too late — must latch a config error
+
+	if e.Server() != nil {
+		t.Fatal("Server non-nil after a post-materialization listener setter; expected the latched config error")
 	}
 }

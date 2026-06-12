@@ -47,19 +47,53 @@ type EtcdImpl struct {
 	// the config-validity cause.
 	userCtx context.Context
 
-	// clientListener and peerListener retain the listeners passed to
-	// WithClientServing / WithPeerServing (nil until set), exposed via the
-	// ClientListener / PeerListener accessors.
-	clientListener net.Listener
-	peerListener   net.Listener
+	// startWaitCtx, set by Join right before it calls Start, bounds Start's
+	// ready wait and reports its expiry as an error — the user context often
+	// has no deadline (a plain cancel), and an unready joiner must fail within
+	// the join budget so the rollback can run rather than hang on ReadyNotify.
+	// Plain Start (field unset) keeps the historical contract: nil after a
+	// user-context cancel, shutdown left to the AfterFunc.
+	startWaitCtx context.Context
 
-	// clientHTTP/peerHTTP are the http.Servers returned by ClientHTTP/PeerHTTP:
-	// the ones supplied via WithClientServing/WithPeerServing, or defaults created
-	// (once each) if none were provided.
-	clientHTTP     *http.Server
-	clientHTTPOnce sync.Once
-	peerHTTP       *http.Server
-	peerHTTPOnce   sync.Once
+	// clientListenerFactory/peerListenerFactory produce each side's listener,
+	// invoked lazily (exactly once) by the ClientListener/PeerListener
+	// accessors. newImpl seeds auto-bind defaults; WithClientListener/
+	// WithPeerListener replace them with factories handing out the caller's
+	// listener. A nil factory means "do nothing": the headless client side
+	// (WithClientListener(nil)) binds and serves nothing and registers no
+	// client URLs.
+	clientListenerFactory func() (net.Listener, error)
+	peerListenerFactory   func() (net.Listener, error)
+
+	// clientHTTPFactory/peerHTTPFactory produce the http.Servers libetcd
+	// serves each side's listener with (Handler = ClientHandler/PeerHandler),
+	// invoked lazily (exactly once) by ClientHTTP/PeerHTTP. A nil factory
+	// serves nothing.
+	clientHTTPFactory func() *http.Server
+	clientHTTPOnce    sync.Once
+	peerHTTPFactory   func() *http.Server
+	peerHTTPOnce      sync.Once
+
+	// Factory invocation is lazy and once-guarded, driven by the accessors:
+	// ClientListener/PeerListener invoke their listener factory on first call
+	// (binding the socket and deriving the listen/advertise URLs), and
+	// ClientHTTP/PeerHTTP invoke their http factory on first call. These fields
+	// cache the results; nil-factory sides stay nil. There is no eager
+	// ensure/materialize step — Server() and Start() simply call the accessors.
+	clientListenerOnce sync.Once
+	clientListener     net.Listener
+	peerListenerOnce   sync.Once
+	peerListener       net.Listener
+	clientHTTP         *http.Server
+	peerHTTP           *http.Server
+
+	// {client,peer}ListenerMaterialized latch true when the listener factory
+	// has been invoked (even for a nil/headless or latched-config result, which
+	// leaves the listener nil). Once set, the listener setters refuse — the
+	// sync.Once is spent, so a later setter could change the advertised URLs
+	// without the factory ever binding them.
+	clientListenerMaterialized atomic.Bool
+	peerListenerMaterialized   atomic.Bool
 
 	// clusterSet records that the cluster membership has been pinned (by Join,
 	// which joins an existing cluster). Until then, mutate auto-syncs
@@ -122,6 +156,14 @@ func newImpl() *EtcdImpl {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	// Factory defaults: a free loopback port per side, bound lazily at
+	// materialization (Start/Join) rather than construction, each served with
+	// the default handler. A nil factory means "do nothing" for that piece;
+	// the With*Listener setters install, replace, or nil these.
+	b.clientListenerFactory = func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
+	b.clientHTTPFactory = func() *http.Server { return &http.Server{Handler: b.ClientHandler()} }
+	b.peerListenerFactory = func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
+	b.peerHTTPFactory = func() *http.Server { return &http.Server{Handler: b.PeerHandler()} }
 	// Validate the defaults and seed srvcfg, so a builder with no With* calls
 	// can still mint a server from embed.NewConfig()'s baseline.
 	b.mutate(func() error { return nil })

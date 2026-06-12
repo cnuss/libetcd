@@ -27,13 +27,13 @@ func TestAutoSyncInitialCluster(t *testing.T) {
 	}
 
 	e := v1alpha1.New()
-	e.WithDir(t.TempDir()).WithPeerServing(lp, nil)
+	e.WithDir(t.TempDir()).WithPeerListener(lp)
 	if err := e.Start(); err != nil {
 		t.Fatalf("auto-sync failed, Start: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Stop() })
 
 	if e.Server() == nil {
-		t.Fatal("nil server after WithPeerServing")
+		t.Fatal("nil server after WithPeerListener")
 	}
 }

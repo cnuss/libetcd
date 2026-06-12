@@ -162,7 +162,7 @@ func TestJoinHandleExhausted(t *testing.T) {
 	}
 }
 
-// TestJoinFailsFastOnLoopbackMismatch: with no WithPeerServing the advertise
+// TestJoinFailsFastOnLoopbackMismatch: with no WithPeerListener the advertise
 // peer URL is an auto-bound loopback address, which a remote (non-loopback)
 // cluster can never dial back; Join must fail before the member-add rather
 // than at the promote timeout.
