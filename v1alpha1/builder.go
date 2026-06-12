@@ -43,7 +43,7 @@ func (b *EtcdImpl) WithDir(dir string) v1.Etcd {
 // error instead of lying.
 func (b *EtcdImpl) WithClientListener(lis net.Listener) v1.Etcd {
 	b.mutate(func() error {
-		if b.clientListener != nil {
+		if b.clientListenerMaterialized.Load() {
 			return fmt.Errorf("client listener already materialized; configure before Start/Join")
 		}
 		if lis == nil {
@@ -124,7 +124,7 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 // listener can't reach the running config, so the call latches an error.
 func (b *EtcdImpl) WithPeerListener(lis net.Listener) v1.Etcd {
 	b.mutate(func() error {
-		if b.peerListener != nil {
+		if b.peerListenerMaterialized.Load() {
 			return fmt.Errorf("peer listener already materialized; configure before Start/Join")
 		}
 		if lis == nil {

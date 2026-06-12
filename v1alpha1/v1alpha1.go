@@ -87,6 +87,14 @@ type EtcdImpl struct {
 	clientHTTP         *http.Server
 	peerHTTP           *http.Server
 
+	// {client,peer}ListenerMaterialized latch true when the listener factory
+	// has been invoked (even for a nil/headless or latched-config result, which
+	// leaves the listener nil). Once set, the listener setters refuse — the
+	// sync.Once is spent, so a later setter could change the advertised URLs
+	// without the factory ever binding them.
+	clientListenerMaterialized atomic.Bool
+	peerListenerMaterialized   atomic.Bool
+
 	// clusterSet records that the cluster membership has been pinned (by Join,
 	// which joins an existing cluster). Until then, mutate auto-syncs
 	// InitialCluster to a single-member string. Once pinned, Join owns it.

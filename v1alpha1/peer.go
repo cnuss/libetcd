@@ -210,7 +210,19 @@ func (p *peerJoiner) Join() (err error) {
 	p.mu.Lock()
 	token := p.cfg.InitialClusterToken
 	p.mu.Unlock()
-	jc := &join.Client{HTTP: &http.Client{}, Token: token}
+	// A short dial timeout so a blackholed peer fails fast and joinAddToAny
+	// moves to the next one, rather than stalling on the OS connect timeout and
+	// eating the join budget. No response-header/body timeout: the add does
+	// real raft work and streams a snapshot, both bounded by the join ctx.
+	jc := &join.Client{
+		HTTP: &http.Client{
+			Transport: &http.Transport{
+				DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+				TLSHandshakeTimeout: 5 * time.Second,
+			},
+		},
+		Token: token,
+	}
 
 	// A failure from here on can leave a half-joined member behind — the add
 	// itself can commit while its response is lost — so the rollback is armed

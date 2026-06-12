@@ -99,6 +99,7 @@ func (b *EtcdImpl) GrpcServer() *grpc.Server {
 // error is latched as the config cause).
 func (b *EtcdImpl) ClientListener() net.Listener {
 	b.clientListenerOnce.Do(func() {
+		b.clientListenerMaterialized.Store(true)
 		b.mu.Lock()
 		f, latched := b.clientListenerFactory, context.Cause(b.ctx)
 		b.mu.Unlock()
@@ -130,6 +131,7 @@ func (b *EtcdImpl) ClientListener() net.Listener {
 // (latched as the config cause) — the peer side cannot be turned off.
 func (b *EtcdImpl) PeerListener() net.Listener {
 	b.peerListenerOnce.Do(func() {
+		b.peerListenerMaterialized.Store(true)
 		b.mu.Lock()
 		f, latched := b.peerListenerFactory, context.Cause(b.ctx)
 		b.mu.Unlock()

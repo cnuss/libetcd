@@ -230,3 +230,26 @@ func TestWithClientListenerNil(t *testing.T) {
 		t.Errorf("headless member registered client URLs %v, want none", urls)
 	}
 }
+
+// TestWithListenerAfterMaterializeErrors: a listener setter called after the
+// listener has materialized (here a headless client side, whose factory ran to
+// a nil result) must latch — the sync.Once is spent, so a later setter could
+// change the advertised URLs without the factory ever binding them.
+func TestWithListenerAfterMaterializeErrors(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithClientListener(nil)
+	if l := e.ClientListener(); l != nil { // materializes the (nil) client side
+		t.Fatalf("ClientListener = %v, want nil", l.Addr())
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lis.Close()
+	e.WithClientListener(lis) // too late — must latch a config error
+
+	if e.Server() != nil {
+		t.Fatal("Server non-nil after a post-materialization listener setter; expected the latched config error")
+	}
+}

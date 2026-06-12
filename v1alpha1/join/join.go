@@ -17,7 +17,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,14 +49,16 @@ const (
 	// listener — on a cleartext listener it is sniffable, exactly like etcd's
 	// own auth without TLS.
 	TokenHeader = "X-Libetcd-Cluster-Token"
-
-	// POST-response headers: the leader-assigned identity the joiner needs to
-	// restore the snapshot as an existing member. The membership rides a
-	// base64-JSON header so the response body stays a pure snapshot stream.
-	selfIDHeader    = "X-Libetcd-Self-Id"
-	clusterIDHeader = "X-Libetcd-Cluster-Id"
-	membersHeader   = "X-Libetcd-Members"
 )
+
+// addPrelude is the JSON metadata the POST response carries ahead of the
+// snapshot stream (length-prefixed; see add): the leader-assigned identity and
+// the post-add membership the joiner restores the snapshot against.
+type addPrelude struct {
+	SelfID    uint64
+	ClusterID uint64
+	Members   []snapshot.MemberInfo
+}
 
 // Paths returns the join resource's URL path, for the peer mux's served-path
 // list.
@@ -159,7 +161,13 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("acquiring join lock: %v", err), http.StatusServiceUnavailable)
 		return
 	}
-	defer func() { _ = release() }()
+	defer func() {
+		if rerr := release(); rerr != nil && s.Logger != nil {
+			// The lock's lease will still expire on its own; log so a stuck
+			// release (blocking concurrent joins until expiry) is diagnosable.
+			s.Logger.Warn("join: releasing join lock", zap.Error(rerr))
+		}
+	}()
 
 	out, status, err := addLearner(r.Context(), cli, list)
 	if err != nil {
@@ -170,7 +178,13 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	membersJSON, err := json.Marshal(out.members)
+	// Metadata rides a length-prefixed JSON prelude at the front of the body,
+	// not response headers: the full membership can be larger than common
+	// header-size limits (8–16 KiB) on a big cluster, which would fail the join
+	// as an opaque transport error. The body is: 4-byte big-endian prelude
+	// length, that many bytes of JSON (selfID, clusterID, members), then the
+	// raw snapshot stream.
+	preludeJSON, err := json.Marshal(addPrelude{out.memberID, out.clusterID, out.members})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("encoding membership: %v", err), http.StatusInternalServerError)
 		return
@@ -183,15 +197,20 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	}
 	defer snap.Close()
 
-	w.Header().Set(selfIDHeader, strconv.FormatUint(out.memberID, 10))
-	w.Header().Set(clusterIDHeader, strconv.FormatUint(out.clusterID, 10))
-	w.Header().Set(membersHeader, base64.StdEncoding.EncodeToString(membersJSON))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	if _, err := io.Copy(w, snap); err != nil {
+	var lenbuf [4]byte
+	binary.BigEndian.PutUint32(lenbuf[:], uint32(len(preludeJSON)))
+	if _, err := w.Write(lenbuf[:]); err == nil {
+		_, err = w.Write(preludeJSON)
+	}
+	if err == nil {
+		_, err = io.Copy(w, snap)
+	}
+	if err != nil {
 		// Status already sent; the joiner sees a short read and retries.
 		if s.Logger != nil {
-			s.Logger.Warn("join: streaming snapshot to joiner", zap.Error(err))
+			s.Logger.Warn("join: streaming join response to joiner", zap.Error(err))
 		}
 	}
 }
@@ -383,27 +402,24 @@ func (c *Client) Add(ctx context.Context, peerURL string, peerURLs []string) (*A
 		return nil, statusError(resp) // 409 and 5xx: retryable (closes the body)
 	}
 
-	selfID, err := strconv.ParseUint(resp.Header.Get(selfIDHeader), 10, 64)
-	if err != nil {
+	// Read the length-prefixed JSON prelude, then the body's remainder is the
+	// snapshot stream (returned to the caller to restore and close).
+	var lenbuf [4]byte
+	if _, err := io.ReadFull(resp.Body, lenbuf[:]); err != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("add: bad %s header: %w", selfIDHeader, err)
+		return nil, fmt.Errorf("add: reading prelude length: %w", err)
 	}
-	clusterID, err := strconv.ParseUint(resp.Header.Get(clusterIDHeader), 10, 64)
-	if err != nil {
+	preludeJSON := make([]byte, binary.BigEndian.Uint32(lenbuf[:]))
+	if _, err := io.ReadFull(resp.Body, preludeJSON); err != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("add: bad %s header: %w", clusterIDHeader, err)
+		return nil, fmt.Errorf("add: reading prelude: %w", err)
 	}
-	membersJSON, err := base64.StdEncoding.DecodeString(resp.Header.Get(membersHeader))
-	if err != nil {
+	var p addPrelude
+	if err := json.Unmarshal(preludeJSON, &p); err != nil {
 		resp.Body.Close()
-		return nil, fmt.Errorf("add: bad %s header: %w", membersHeader, err)
+		return nil, fmt.Errorf("add: decoding prelude: %w", err)
 	}
-	var members []snapshot.MemberInfo
-	if err := json.Unmarshal(membersJSON, &members); err != nil {
-		resp.Body.Close()
-		return nil, fmt.Errorf("add: decoding membership: %w", err)
-	}
-	return &AddResult{SelfID: selfID, ClusterID: clusterID, Members: members, Snapshot: resp.Body}, nil
+	return &AddResult{SelfID: p.SelfID, ClusterID: p.ClusterID, Members: p.Members, Snapshot: resp.Body}, nil
 }
 
 // Promote asks a peer (PUT) to promote memberID to a voter. It returns nil on
@@ -453,15 +469,20 @@ func (c *Client) reconfig(ctx context.Context, method, peerURL string, q url.Val
 }
 
 func (c *Client) do(ctx context.Context, method, peerURL string, query url.Values, body url.Values) (*http.Response, error) {
-	full := peerURL + Path
-	if len(query) > 0 {
-		full += "?" + query.Encode()
+	// Build the URL by parsing the base and joining the path, so a peer URL
+	// with its own path component (e.g. behind a reverse proxy at host/etcd)
+	// produces host/etcd/libetcd/v1/join rather than a string-concat mistake.
+	base, err := url.Parse(peerURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing peer URL %q: %w", peerURL, err)
 	}
+	full := base.JoinPath(Path)
+	full.RawQuery = query.Encode()
 	var r io.Reader
 	if body != nil {
 		r = strings.NewReader(body.Encode())
 	}
-	req, err := http.NewRequestWithContext(ctx, method, full, r)
+	req, err := http.NewRequestWithContext(ctx, method, full.String(), r)
 	if err != nil {
 		return nil, err
 	}
