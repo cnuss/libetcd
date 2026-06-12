@@ -201,7 +201,7 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	var lenbuf [4]byte
 	binary.BigEndian.PutUint32(lenbuf[:], uint32(len(preludeJSON)))
-	if _, err := w.Write(lenbuf[:]); err == nil {
+	if _, err = w.Write(lenbuf[:]); err == nil {
 		_, err = w.Write(preludeJSON)
 	}
 	if err == nil {
