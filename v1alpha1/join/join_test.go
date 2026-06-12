@@ -168,3 +168,54 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("Remove (idempotent) = %v, want nil", err)
 	}
 }
+
+// TestRemoveByPeerURLs covers the lost-response rollback: a joiner that never
+// learned its member ID removes the half-committed learner by its peer URLs.
+func TestRemoveByPeerURLs(t *testing.T) {
+	node := v1alpha1.New()
+	node.WithDir(t.TempDir()).WithClusterToken(testToken)
+	if err := node.Start(); err != nil {
+		t.Fatalf("node Start: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop() })
+
+	srv := &join.Server{
+		Self:  node.Self,
+		Token: testToken,
+		Acquire: func(ctx context.Context, cli *clientv3.Client) (func() error, error) {
+			lk, err := lock.Acquire(ctx, cli, "peer-join")
+			if err != nil {
+				return nil, err
+			}
+			return lk.Release, nil
+		},
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	cli := &join.Client{HTTP: ts.Client(), Token: testToken}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	urls := []string{"http://127.0.0.1:32381"}
+
+	// Unknown URLs: nothing to remove, idempotent success.
+	if err := cli.RemoveByPeerURLs(ctx, ts.URL, urls); err != nil {
+		t.Errorf("RemoveByPeerURLs(unknown) = %v, want nil", err)
+	}
+
+	// Add a learner, then remove it by its peer URLs (no member ID).
+	add, err := cli.Add(ctx, ts.URL, urls)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	add.Snapshot.Close()
+	if err := cli.RemoveByPeerURLs(ctx, ts.URL, urls); err != nil {
+		t.Fatalf("RemoveByPeerURLs: %v", err)
+	}
+
+	// It's gone: a Remove by the (now stale) ID is idempotent success.
+	if err := cli.Remove(ctx, ts.URL, add.SelfID); err != nil {
+		t.Errorf("Remove after by-URL removal = %v, want nil", err)
+	}
+}
