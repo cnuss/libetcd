@@ -15,6 +15,7 @@ package join
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -101,22 +102,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return err
 		})
 	case http.MethodDelete:
-		s.reconfig(w, r, func(ctx context.Context, cli *clientv3.Client, id uint64) error {
-			_, err := cli.MemberRemove(ctx, id)
-			if errors.Is(err, rpctypes.ErrMemberNotFound) {
-				return nil // already gone
-			}
-			return err
-		})
+		s.remove(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 // authorize gates a verb on a matching cluster token and returns the in-process
-// client. The HTTP method is already dispatched by handle.
+// client. The HTTP method is already dispatched by ServeHTTP. The token is
+// compared as a fixed-length SHA-256 digest so the comparison time doesn't vary
+// with the (attacker-controlled) token length — subtle.ConstantTimeCompare
+// short-circuits on a length mismatch, which would otherwise leak it.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (*clientv3.Client, bool) {
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get(TokenHeader)), []byte(s.Token)) != 1 {
+	got := sha256.Sum256([]byte(r.Header.Get(TokenHeader)))
+	want := sha256.Sum256([]byte(s.Token))
+	if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 		http.Error(w, "invalid cluster token", http.StatusForbidden)
 		return nil, false
 	}
@@ -145,7 +145,10 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	}
 	list := strings.Split(peerURLs, ",")
 	for _, u := range list {
-		if pu, err := url.Parse(u); err != nil || pu.Host == "" {
+		// Reject bad input with 400 (a permanent client error) rather than
+		// letting a non-http scheme reach MemberAddAsLearner, whose failure
+		// would be mapped to a retryable 409 and spun on.
+		if pu, err := url.Parse(u); err != nil || pu.Host == "" || (pu.Scheme != "http" && pu.Scheme != "https") {
 			http.Error(w, fmt.Sprintf("invalid peer URL %q", u), http.StatusBadRequest)
 			return
 		}
@@ -276,6 +279,72 @@ func (s *Server) reconfig(w http.ResponseWriter, r *http.Request, op func(contex
 	}
 }
 
+// remove (DELETE) takes either a memberID or a peerURLs query. The peerURLs
+// form is the joiner's lost-response rollback: a POST can commit the member-add
+// server-side while the joiner fails before reading the response, leaving it
+// without a member ID; it then asks each peer to remove the unstarted learner
+// holding its peer URLs. Resolving none (the add never committed, or it was
+// already cleaned up) is idempotent success.
+func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
+	cli, ok := s.authorize(w, r)
+	if !ok {
+		return
+	}
+
+	id, idErr := strconv.ParseUint(r.FormValue("memberID"), 10, 64)
+	if idErr != nil {
+		urls := r.FormValue("peerURLs")
+		if urls == "" {
+			http.Error(w, "memberID or peerURLs required", http.StatusBadRequest)
+			return
+		}
+		resolved, found, lerr := findUnstartedLearner(r.Context(), cli, strings.Split(urls, ","))
+		if lerr != nil {
+			http.Error(w, lerr.Error(), http.StatusConflict) // membership unreadable; retry
+			return
+		}
+		if !found {
+			w.WriteHeader(http.StatusOK) // nothing to roll back
+			return
+		}
+		id = resolved
+	}
+
+	_, err := cli.MemberRemove(r.Context(), id)
+	switch {
+	case err == nil || errors.Is(err, rpctypes.ErrMemberNotFound):
+		w.WriteHeader(http.StatusOK) // removed, or already gone
+	default:
+		http.Error(w, err.Error(), http.StatusConflict)
+	}
+}
+
+// findUnstartedLearner resolves the member ID of an unstarted learner
+// (IsLearner with an empty name — the only shape a half-committed join leaves)
+// advertising any of the given peer URLs. A started or voting member holding
+// one is a different member, not matched.
+func findUnstartedLearner(ctx context.Context, cli *clientv3.Client, urls []string) (uint64, bool, error) {
+	ml, err := cli.MemberList(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	want := make(map[string]struct{}, len(urls))
+	for _, u := range urls {
+		want[strings.TrimSpace(u)] = struct{}{}
+	}
+	for _, m := range ml.Members {
+		if !m.IsLearner || m.Name != "" {
+			continue
+		}
+		for _, pu := range m.PeerURLs {
+			if _, ok := want[pu]; ok {
+				return m.ID, true, nil
+			}
+		}
+	}
+	return 0, false, nil
+}
+
 // ---- client side (the joiner) ----
 
 // Client drives the join protocol from the joining node, over the peer
@@ -307,9 +376,11 @@ func (c *Client) Add(ctx context.Context, peerURL string, peerURLs []string) (*A
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusNotFound {
-			return nil, fmt.Errorf("%w: %s", ErrPermanent, readBody(resp))
+			err := fmt.Errorf("%w: %s", ErrPermanent, readBody(resp))
+			resp.Body.Close()
+			return nil, err
 		}
-		return nil, statusError(resp) // 409 and 5xx: retryable
+		return nil, statusError(resp) // 409 and 5xx: retryable (closes the body)
 	}
 
 	selfID, err := strconv.ParseUint(resp.Header.Get(selfIDHeader), 10, 64)
@@ -339,19 +410,33 @@ func (c *Client) Add(ctx context.Context, peerURL string, peerURLs []string) (*A
 // success, an error wrapping ErrPermanent when the member is gone (404), or a
 // plain (retryable) error otherwise.
 func (c *Client) Promote(ctx context.Context, peerURL string, memberID uint64) error {
-	return c.reconfig(ctx, http.MethodPut, peerURL, memberID)
+	return c.reconfig(ctx, http.MethodPut, peerURL, url.Values{
+		"memberID": {strconv.FormatUint(memberID, 10)},
+	})
 }
 
-// Remove asks a peer (DELETE) to remove memberID (the joiner's rollback).
+// Remove asks a peer (DELETE) to remove memberID (the joiner's rollback when it
+// learned its ID).
 func (c *Client) Remove(ctx context.Context, peerURL string, memberID uint64) error {
-	return c.reconfig(ctx, http.MethodDelete, peerURL, memberID)
+	return c.reconfig(ctx, http.MethodDelete, peerURL, url.Values{
+		"memberID": {strconv.FormatUint(memberID, 10)},
+	})
 }
 
-func (c *Client) reconfig(ctx context.Context, method, peerURL string, memberID uint64) error {
-	// memberID rides the query string, not the body: net/http's FormValue reads
-	// the body only for POST/PUT/PATCH, so a DELETE body would be dropped. A
-	// query param is read for every method.
-	q := url.Values{"memberID": {strconv.FormatUint(memberID, 10)}}
+// RemoveByPeerURLs asks a peer (DELETE) to remove the unstarted learner holding
+// these peer URLs. It is the rollback for a lost-response add: the joiner never
+// learned a member ID, but a half-committed add may have left a learner with
+// its URLs. Resolving none is success.
+func (c *Client) RemoveByPeerURLs(ctx context.Context, peerURL string, peerURLs []string) error {
+	return c.reconfig(ctx, http.MethodDelete, peerURL, url.Values{
+		"peerURLs": {strings.Join(peerURLs, ",")},
+	})
+}
+
+func (c *Client) reconfig(ctx context.Context, method, peerURL string, q url.Values) error {
+	// The selector (memberID or peerURLs) rides the query string, not the body:
+	// net/http's FormValue reads the body only for POST/PUT/PATCH, so a DELETE
+	// body would be dropped. A query param is read for every method.
 	resp, err := c.do(ctx, method, peerURL, q, nil)
 	if err != nil {
 		return err

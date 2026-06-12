@@ -100,9 +100,11 @@ func (b *EtcdImpl) GrpcServer() *grpc.Server {
 func (b *EtcdImpl) ClientListener() net.Listener {
 	b.clientListenerOnce.Do(func() {
 		b.mu.Lock()
-		f := b.clientListenerFactory
+		f, latched := b.clientListenerFactory, context.Cause(b.ctx)
 		b.mu.Unlock()
-		if f == nil {
+		// A latched config error makes the mutate below a no-op, so binding now
+		// would leak the socket (never stored, never closed). Don't bind.
+		if f == nil || latched != nil {
 			return
 		}
 		lis, err := f()
@@ -129,9 +131,10 @@ func (b *EtcdImpl) ClientListener() net.Listener {
 func (b *EtcdImpl) PeerListener() net.Listener {
 	b.peerListenerOnce.Do(func() {
 		b.mu.Lock()
-		f := b.peerListenerFactory
+		f, latched := b.peerListenerFactory, context.Cause(b.ctx)
 		b.mu.Unlock()
-		if f == nil {
+		// See ClientListener: don't bind into a latched (no-op mutate) config.
+		if f == nil || latched != nil {
 			return
 		}
 		lis, err := f()
@@ -164,7 +167,6 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 	lg, token := b.cfg.GetLogger(), b.cfg.InitialClusterToken
 	b.mu.Unlock()
 
-	handler := etcdhttp.NewPeerHandler(lg, srv).(*http.ServeMux)
 	js := &join.Server{
 		Self:  b.Self,
 		Token: token,
@@ -177,11 +179,17 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 		},
 		Logger: lg,
 	}
-	handler.Handle(join.Path, js)
+	// etcdhttp.NewPeerHandler promises only http.Handler, so mount it under our
+	// own mux rather than type-asserting it to *http.ServeMux (which would panic
+	// if a future etcd version changed the type). The join resource takes its
+	// own path; everything else falls through to the etcd peer handler.
+	mux := http.NewServeMux()
+	mux.Handle(join.Path, js)
+	mux.Handle("/", etcdhttp.NewPeerHandler(lg, srv))
 	// Wrap so the raft stream's success status goes out as 206 on the wire; the
 	// dial side (stream.Intercept, called from Server) rewrites it back to 200
 	// before the stock reader. See package stream (issue #8).
-	return stream.Handler(handler)
+	return stream.Handler(mux)
 }
 
 // PeerPaths returns the URL path prefixes the peer (raft) protocol must serve —

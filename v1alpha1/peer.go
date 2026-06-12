@@ -221,7 +221,7 @@ func (p *peerJoiner) Join() (err error) {
 	started := false
 	defer func() {
 		if err != nil {
-			p.abortJoin(jc, joinPeer, memberID, started, logger)
+			p.abortJoin(jc, peers, selfAddrs, joinPeer, memberID, started, logger)
 		}
 	}()
 
@@ -430,18 +430,25 @@ func (p *peerJoiner) seedFromSnapshot(add *join.AddResult, selfName string) erro
 }
 
 // abortJoin best-effort rolls back a partial join so the cluster isn't left
-// with a zombie member, by asking the same peer to remove us (DELETE). Order
-// matters: the member is removed from the cluster first, while the local server
-// (if started) is still serving — after a successful promote this node is a
-// voter, and stopping it before the remove commits can drop the cluster below
-// quorum, wedging it with a dead voter no reconfig can fix. The remove is
-// retried because the rollback runs exactly when the cluster is mid-reconfig,
-// so it sees the same transient rejections the forward path does. If the remove
+// with a zombie member, by asking a peer to remove us (DELETE). Order matters:
+// the member is removed from the cluster first, while the local server (if
+// started) is still serving — after a successful promote this node is a voter,
+// and stopping it before the remove commits can drop the cluster below quorum,
+// wedging it with a dead voter no reconfig can fix. The remove is retried
+// because the rollback runs exactly when the cluster is mid-reconfig, so it
+// sees the same transient rejections the forward path does. If the remove
 // ultimately fails while the server is running, the server is left running — a
 // live voter keeps quorum reachable for a manual remove — and the caller can
 // Stop() afterwards. It runs on a fresh bounded context because the join's own
 // context is typically already dead here.
-func (p *peerJoiner) abortJoin(jc *join.Client, joinPeer string, memberID uint64, started bool, logger *zap.Logger) {
+//
+// When the add never reported a member ID — it failed, or it committed
+// server-side but the response was lost before the joiner parsed it (an HTTP
+// POST is not atomic with its response) — there may still be a zombie learner
+// holding our peer URLs. We can't name it, so we sweep every peer asking it to
+// remove the unstarted learner with our URLs (RemoveByPeerURLs), idempotent if
+// there's nothing to remove.
+func (p *peerJoiner) abortJoin(jc *join.Client, peers, selfAddrs []string, joinPeer string, memberID uint64, started bool, logger *zap.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -452,11 +459,16 @@ func (p *peerJoiner) abortJoin(jc *join.Client, joinPeer string, memberID uint64
 		p.exhausted.Store(true)
 	}
 
-	// No member ID means the add never reported one — either it never committed
-	// or its response was lost. The add is atomic with its response over one
-	// HTTP exchange (unlike the old multi-RPC path), so a missing ID means no
-	// member to roll back. Nothing to do.
-	if memberID == 0 || joinPeer == "" {
+	// Lost-response (or pre-ID failure) case: no member ID to name, so sweep
+	// peers to remove any learner holding our peer URLs. Best-effort — a server
+	// not running locally means there's nothing to stop afterwards.
+	if memberID == 0 {
+		for _, peer := range peers {
+			if rerr := jc.RemoveByPeerURLs(ctx, peer, selfAddrs); rerr == nil {
+				logger.Info("join rollback: removed half-joined learner by peer URL", zap.String("via", peer))
+				return
+			}
+		}
 		return
 	}
 
