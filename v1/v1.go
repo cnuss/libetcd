@@ -183,12 +183,15 @@ type EtcdPeer interface {
 	Client
 	Builder[EtcdPeer]
 
-	// Join brings the node into the cluster at the configured peer URLs: it
-	// discovers a client endpoint from those peers, takes a cluster-wide join
-	// lock so concurrent joiners serialize, adds itself as a learner, starts,
-	// and promotes itself to a voting member once caught up. It blocks until the
-	// node is voting or the bounding context elapses; on failure after the
-	// member-add it rolls the half-joined member back out of the cluster.
+	// Join brings the node into the cluster at the configured peer URLs, over
+	// the peer (raft) listener: it POSTs itself to a peer's /libetcd/v1/join
+	// endpoint (which adds it as a learner under a cluster-wide join lock and
+	// streams back a seed snapshot), restores the snapshot, starts, and
+	// promotes itself to a voting member once caught up. No networked client is
+	// dialed; the join is authorized by the cluster token (WithClusterToken),
+	// so it is libetcd-to-libetcd. It blocks until the node is voting or the
+	// bounding context elapses; on failure after the member-add it rolls the
+	// half-joined member back out of the cluster.
 	//
 	// Join is for first-time membership only. Restarting a member that already
 	// joined is Start's job: construct a fresh New() builder over its data dir

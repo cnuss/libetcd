@@ -60,9 +60,13 @@ func main() {
 ### Join an existing cluster
 
 Give `From` the peer (raft) URLs of any current members — a hardcoded list, from
-config, or another node's `Peers()`. `Join` discovers a client endpoint by
-scraping the peers' `/members`, adds the node as a learner, catches it up, and
-promotes it to a voting member:
+config, or another node's `Peers()`. `Join` runs entirely over the peer (raft)
+listener: it POSTs the node to a peer's `/libetcd/v1/join` endpoint, restores the
+snapshot the peer streams back, starts, and promotes the node to a voting member.
+No client endpoint is dialed, so a node needs only the peer transport to join —
+and a fully headless cluster (serving no client traffic anywhere) is joinable.
+The join is authorized by the cluster token (`WithClusterToken`), so it is
+libetcd-to-libetcd; stock etcd doesn't serve the endpoint:
 
 ```go
 package main
@@ -111,9 +115,12 @@ under the `libetcd/lock/` prefix in the target cluster's keyspace — visible to
 scans, watchers, and backups — so applications should avoid keys under that
 prefix. Working examples:
 [`examples/multi-node/main.go`](./examples/multi-node/main.go) (one join),
-[`examples/async-join/main.go`](./examples/async-join/main.go) (three at once).
+[`examples/async-join/main.go`](./examples/async-join/main.go) (three at once),
 [`examples/load-join/main.go`](./examples/load-join/main.go) (concurrent joins
-while sustained writes are in flight, then zero-loss verification).
+while sustained writes are in flight, then zero-loss verification), and
+[`examples/headless-leader/main.go`](./examples/headless-leader/main.go) (a
+bootstrap node serving no client traffic — `WithClientListener(nil)` — that
+nodes still join over the peer transport).
 
 ### Restarts and data-dir reuse
 
@@ -236,8 +243,8 @@ setters (chaining back to `EtcdPeer`), plus `Join`/`Stop` — but no `Start`.
 type EtcdPeer interface {
     Client            // Self / Leader / Voters / Peers
     Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
-    Join() error      // discover a client endpoint via the peers' /members, take the
-                      // cluster join lock, add as learner, start, promote to voting;
+    Join() error      // join over the peer listener: POST /libetcd/v1/join, restore the
+                      // streamed snapshot, start, promote to voting; token-authorized,
                       // rolls back the half-joined member on failure
     Stop() error      // best-effort, idempotent shutdown
 }
@@ -245,11 +252,11 @@ type EtcdPeer interface {
 
 Peer URLs are plain strings — bare `host:port`, `http://`, or `https://`
 entries are accepted. At `Join` time `From` trims them, defaults a missing
-scheme to `http`, de-duplicates, and silently drops any it can't parse.
-`https://` entries only work against clusters whose endpoints present
-publicly-trusted certificates and don't require client-cert auth; mutual-TLS or
-private-CA clusters are not yet supported on the join path
-([#57](https://github.com/cnuss/libetcd/issues/57)).
+scheme to `http`, de-duplicates, and silently drops any it can't parse. The
+join rides the peer (raft) listener and is gated by the cluster token; that
+gate is only meaningful over a TLS peer listener (a cleartext one carries the
+token in the clear), so peer-listener TLS for the join path is still being
+worked out ([#74](https://github.com/cnuss/libetcd/issues/74)).
 
 ## Examples
 
@@ -263,6 +270,7 @@ Self-contained programs in [`./examples`](./examples):
 | `load-join`   | Run sustained writes while several peers join concurrently; then verify every acknowledged write survives on every member. |
 | `dir-handoff` | Stop a node, then boot a brand-new builder over the same data dir (process-restart semantics); verify every key survived. |
 | `restart-cycle` | Stop every member of a cluster, recreate them all with fresh builders over the same dirs + addresses, verify zero loss — twice. |
+| `headless-leader` | Bootstrap a node serving no client traffic (`WithClientListener(nil)`); join two nodes to it over the peer transport; verify replication and that one member is headless. |
 
 Run one locally:
 
@@ -273,6 +281,7 @@ make run async-join
 make run load-join
 make run dir-handoff
 make run restart-cycle
+make run headless-leader
 ```
 
 ## Testing

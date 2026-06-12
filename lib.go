@@ -41,12 +41,17 @@ func New() v1.Etcd {
 // peer URLs (e.g. another node's Peers()). Peers are plain strings — bare
 // host:port, http://, or https:// entries are accepted; at Join time the
 // library trims them, defaults a missing scheme to http, de-duplicates, and
-// silently drops any it can't parse. Note that https entries only work against
-// clusters whose endpoints present publicly-trusted certificates and don't
-// require client-cert auth — mutual-TLS or private-CA clusters are not yet
-// supported on the join path (issue #57). Configure the node with the With*
-// methods, then call Join; it discovers a client endpoint by scraping the
-// peers' /members handlers and performs a managed learner-join.
+// silently drops any it can't parse. Configure the node with the With* methods,
+// then call Join.
+//
+// Join runs entirely over the cluster's peer (raft) listener: the node POSTs
+// itself to a peer's /libetcd/v1/join endpoint, restores the snapshot the peer
+// streams back, starts, and promotes itself to a voting member — no networked
+// client is dialed, so a node needs only the peer transport to join (and a
+// fully headless cluster, serving no client traffic anywhere, is joinable).
+// The join is authorized by the cluster token (WithClusterToken), so it is
+// libetcd-to-libetcd: a stock etcd cluster doesn't serve the endpoint. The
+// token gate is only meaningful over a TLS peer listener; see issue #74.
 func From(peers ...string) v1.EtcdPeer {
 	return v1alpha1.From(peers...)
 }
