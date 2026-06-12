@@ -230,13 +230,29 @@ func (p *peerJoiner) Join() (err error) {
 	// cluster-wide join lock (server-side) and streams back a snapshot taken
 	// after the add, plus the leader-assigned identity and membership. No
 	// networked clientv3, no client-side lock, no discovery scrape.
-	add, peer, err := joinAddToAny(ctx, jc, peers, selfAddrs)
-	if err != nil {
-		return fmt.Errorf("adding self as learner: %w", err)
+	//
+	// Retried on the join ctx (not retryUntil, whose per-attempt cancel would
+	// abort the snapshot download the success returns): a fresh joiner racing a
+	// prior joiner's still-settling reconfig gets a transient "unhealthy
+	// cluster" (mapped to a retryable error server-side); a permanent rejection
+	// (ErrPermanent) stops immediately.
+	var add *join.AddResult
+	for {
+		a, peer, aerr := joinAddToAny(ctx, jc, peers, selfAddrs)
+		if aerr == nil {
+			add, joinPeer, memberID = a, peer, a.SelfID
+			break
+		}
+		if errors.Is(aerr, join.ErrPermanent) {
+			return fmt.Errorf("adding self as learner: %w", aerr)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("adding self as learner: %w (last attempt: %w)", context.Cause(ctx), aerr)
+		case <-time.After(time.Second):
+		}
 	}
 	defer add.Snapshot.Close()
-	joinPeer = peer
-	memberID = add.SelfID
 	logger.Info("join: added as learner", zap.String("member-id", types.ID(memberID).String()), zap.String("via", joinPeer))
 
 	// Pin the cluster as existing so mutate stops single-member auto-sync; the

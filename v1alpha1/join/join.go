@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
@@ -157,20 +158,16 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = release() }()
 
-	added, err := cli.MemberAddAsLearner(r.Context(), list)
+	out, status, err := addLearner(r.Context(), cli, list)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("adding member: %v", err), http.StatusInternalServerError)
+		// 409 transient (e.g. "unhealthy cluster" while a prior reconfig
+		// settles — the joiner retries) vs 404 permanent (too many learners,
+		// auth, a started member already holds the URL).
+		http.Error(w, fmt.Sprintf("adding member: %v", err), status)
 		return
 	}
 
-	members := make([]snapshot.MemberInfo, 0, len(added.Members))
-	for _, m := range added.Members {
-		members = append(members, snapshot.MemberInfo{
-			ID: m.ID, Name: m.Name, PeerURLs: m.PeerURLs,
-			ClientURLs: m.ClientURLs, IsLearner: m.IsLearner,
-		})
-	}
-	membersJSON, err := json.Marshal(members)
+	membersJSON, err := json.Marshal(out.members)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("encoding membership: %v", err), http.StatusInternalServerError)
 		return
@@ -183,8 +180,8 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	}
 	defer snap.Close()
 
-	w.Header().Set(selfIDHeader, strconv.FormatUint(added.Member.ID, 10))
-	w.Header().Set(clusterIDHeader, strconv.FormatUint(added.Header.ClusterId, 10))
+	w.Header().Set(selfIDHeader, strconv.FormatUint(out.memberID, 10))
+	w.Header().Set(clusterIDHeader, strconv.FormatUint(out.clusterID, 10))
 	w.Header().Set(membersHeader, base64.StdEncoding.EncodeToString(membersJSON))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
@@ -194,6 +191,64 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 			s.Logger.Warn("join: streaming snapshot to joiner", zap.Error(err))
 		}
 	}
+}
+
+// addOutcome is the identity + membership the snapshot is restored against.
+type addOutcome struct {
+	memberID  uint64
+	clusterID uint64
+	members   []snapshot.MemberInfo
+}
+
+// addLearner adds the peer URLs as a learner and returns the outcome, or a
+// status code classifying the failure: 409 for a transient rejection the joiner
+// should retry (an unhealthy cluster mid-reconfig, no leader yet), 404 for a
+// permanent one. A lost-response retry that finds the add already committed —
+// ErrPeerURLExist for an unstarted learner holding these URLs — is recovered as
+// success; the same URL on a started or voting member is a real conflict (404).
+func addLearner(ctx context.Context, cli *clientv3.Client, urls []string) (addOutcome, int, error) {
+	added, err := cli.MemberAddAsLearner(ctx, urls)
+	if err == nil {
+		return addOutcome{added.Member.ID, added.Header.ClusterId, toMemberInfos(added.Members)}, http.StatusOK, nil
+	}
+	if errors.Is(err, rpctypes.ErrPeerURLExist) {
+		ml, lerr := cli.MemberList(ctx)
+		if lerr != nil {
+			return addOutcome{}, http.StatusConflict, lerr // membership unreadable; retry
+		}
+		want := make(map[string]struct{}, len(urls))
+		for _, u := range urls {
+			want[u] = struct{}{}
+		}
+		for _, m := range ml.Members {
+			if !m.IsLearner || m.Name != "" {
+				continue
+			}
+			for _, pu := range m.PeerURLs {
+				if _, ok := want[pu]; ok {
+					return addOutcome{m.ID, ml.Header.ClusterId, toMemberInfos(ml.Members)}, http.StatusOK, nil
+				}
+			}
+		}
+		return addOutcome{}, http.StatusNotFound, fmt.Errorf("peer URL already held by an existing member: %w", err)
+	}
+	if errors.Is(err, rpctypes.ErrTooManyLearners) ||
+		errors.Is(err, rpctypes.ErrPermissionDenied) ||
+		errors.Is(err, rpctypes.ErrUserEmpty) {
+		return addOutcome{}, http.StatusNotFound, err
+	}
+	return addOutcome{}, http.StatusConflict, err // transient: unhealthy cluster, no leader, …
+}
+
+func toMemberInfos(ms []*etcdserverpb.Member) []snapshot.MemberInfo {
+	out := make([]snapshot.MemberInfo, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, snapshot.MemberInfo{
+			ID: m.ID, Name: m.Name, PeerURLs: m.PeerURLs,
+			ClientURLs: m.ClientURLs, IsLearner: m.IsLearner,
+		})
+	}
+	return out
 }
 
 // reconfig is the shared promote (PUT) / remove (DELETE) body: authorize, parse
@@ -251,7 +306,10 @@ func (c *Client) Add(ctx context.Context, peerURL string, peerURLs []string) (*A
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, statusError(resp)
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %s", ErrPermanent, readBody(resp))
+		}
+		return nil, statusError(resp) // 409 and 5xx: retryable
 	}
 
 	selfID, err := strconv.ParseUint(resp.Header.Get(selfIDHeader), 10, 64)
