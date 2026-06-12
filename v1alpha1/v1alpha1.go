@@ -67,7 +67,7 @@ type EtcdImpl struct {
 
 	// clientHTTPFactory/peerHTTPFactory produce the http.Servers libetcd
 	// serves each side's listener with (Handler = ClientHandler/PeerHandler),
-	// invoked lazily (exactly once) by ClientHTTP/PeerHTTP. A nil factory
+	// invoked lazily (exactly once) by clientServer/peerServer. A nil factory
 	// serves nothing.
 	clientHTTPFactory func() *http.Server
 	clientHTTPOnce    sync.Once
@@ -77,7 +77,7 @@ type EtcdImpl struct {
 	// Factory invocation is lazy and once-guarded, driven by the accessors:
 	// ClientListener/PeerListener invoke their listener factory on first call
 	// (binding the socket and deriving the listen/advertise URLs), and
-	// ClientHTTP/PeerHTTP invoke their http factory on first call. These fields
+	// clientServer/peerServer invoke their http factory on first call. These fields
 	// cache the results; nil-factory sides stay nil. There is no eager
 	// ensure/materialize step — Server() and Start() simply call the accessors.
 	clientListenerOnce sync.Once

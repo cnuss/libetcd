@@ -157,10 +157,6 @@ func TestWithPeerListener(t *testing.T) {
 				t.Errorf("PeerListener = %v, want the provided listener", pl.Addr())
 			}
 
-			if srv := e.PeerHTTP(); srv == nil || srv.Handler == nil {
-				t.Fatal("PeerHTTP server missing or has a nil Handler")
-			}
-
 			// Node is healthy: round-trip a key through the loopback client.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -204,9 +200,6 @@ func TestWithClientListenerNil(t *testing.T) {
 
 	if l := e.ClientListener(); l != nil {
 		t.Errorf("ClientListener = %v, want nil on a headless client side", l.Addr())
-	}
-	if srv := e.ClientHTTP(); srv != nil {
-		t.Error("ClientHTTP non-nil on a headless client side; nothing should be served")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

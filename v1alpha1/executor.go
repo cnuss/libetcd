@@ -41,15 +41,15 @@ func (b *EtcdImpl) Start() (err error) {
 
 		// Serve the peer + client listeners *before* waiting for ready: a joining
 		// member needs its peer server up to receive raft and catch up, or
-		// ReadyNotify never fires. PeerHTTP/ClientHTTP resolve each side's
+		// ReadyNotify never fires. peerHTTP/clientHTTP resolve each side's
 		// http factory; a side with no listener serves nothing.
 		if pl != nil {
-			if ph := b.PeerHTTP(); ph != nil {
+			if ph := b.peerServer(); ph != nil {
 				go func() { _ = ph.Serve(pl) }()
 			}
 		}
 		if cl != nil {
-			if ch := b.ClientHTTP(); ch != nil {
+			if ch := b.clientServer(); ch != nil {
 				go func() { _ = ch.Serve(cl) }()
 			}
 		}

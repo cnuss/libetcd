@@ -39,16 +39,9 @@ type Server interface {
 	PeerHandler() http.Handler
 	// PeerPaths returns the URL path prefixes the peer (raft) protocol must
 	// serve: the raft message endpoints plus the membership, lease-forwarding,
-	// version, and downgrade paths. Callers serving the peer protocol themselves
-	// can use it to mount PeerHandler on the same set.
+	// version, and downgrade paths. Callers mounting PeerHandler elsewhere (e.g.
+	// for metrics or inspection) can use it to map the same set.
 	PeerPaths() []string
-	// ClientHTTP returns the http.Server libetcd serves the client (v3 API)
-	// listener with, resolved at most once; its Handler is ClientHandler. Nil
-	// when the client side is headless (WithClientListener(nil)).
-	ClientHTTP() *http.Server
-	// PeerHTTP returns the http.Server libetcd serves the peer (raft) listener
-	// with, resolved at most once; its Handler is PeerHandler.
-	PeerHTTP() *http.Server
 	// ClientListener returns the materialized client listener — the one passed
 	// to WithClientListener, or the auto-bound default — or nil before
 	// Start/Join binds it or when the client side is headless.

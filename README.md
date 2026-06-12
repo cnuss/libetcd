@@ -217,12 +217,10 @@ type Server interface {
     Server() *etcdserver.EtcdServer  // the minted server (nil on bad config)
     GrpcServer() *grpc.Server        // v3 gRPC server (election + lock registered)
     ClientHandler() http.Handler     // gRPC (+REST gateway) handler, h2c-wrapped
-    PeerHandler() http.Handler       // raft peer protocol handler
-    ClientHTTP() *http.Server        // client http.Server (provided or default)
-    PeerHTTP() *http.Server          // peer http.Server (provided or default)
+    PeerHandler() http.Handler       // raft peer protocol + join handler
     ClientListener() net.Listener    // materialized client listener (nil when headless)
     PeerListener() net.Listener      // materialized peer listener
-    PeerPaths() []string             // raft path prefixes (mount PeerHandler here to self-serve raft)
+    PeerPaths() []string             // raft path prefixes (mount PeerHandler elsewhere to inspect)
 }
 
 // Client — clientv3 clients to the cluster.

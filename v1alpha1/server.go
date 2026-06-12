@@ -251,12 +251,14 @@ func (b *EtcdImpl) ClientHandler() http.Handler {
 	return handler
 }
 
-// ClientHTTP resolves (at most once) and returns the http.Server libetcd
-// serves the client (v3 API) listener with: the client http factory's output,
-// whose Handler is ClientHandler. Nil when the side's factory is nil (headless
-// client side — nothing to serve). Resolving the handler mints the server, so
-// Start calls this after the listeners have materialized.
-func (b *EtcdImpl) ClientHTTP() *http.Server {
+// clientServer resolves (at most once) the http.Server libetcd serves the client
+// (v3 API) listener with: the client http factory's output, whose Handler is
+// ClientHandler. Nil when the side's factory is nil (headless client side —
+// nothing to serve). Resolving the handler mints the server, so Start calls
+// this after the listeners have materialized. It is unexported deliberately:
+// libetcd owns serving (you set the listener via WithClientListener, libetcd
+// serves it), so the server isn't handed out for callers to mutate.
+func (b *EtcdImpl) clientServer() *http.Server {
 	b.clientHTTPOnce.Do(func() {
 		b.mu.Lock()
 		f := b.clientHTTPFactory
@@ -274,11 +276,10 @@ func (b *EtcdImpl) ClientHTTP() *http.Server {
 	return b.clientHTTP
 }
 
-// PeerHTTP resolves (at most once) and returns the http.Server libetcd serves
-// the peer (raft) listener with: the peer http factory's output, whose Handler
-// is PeerHandler. Resolving the handler mints the server, so Start calls this
-// after the listeners have materialized.
-func (b *EtcdImpl) PeerHTTP() *http.Server {
+// peerServer resolves (at most once) the http.Server libetcd serves the peer
+// (raft) listener with, exactly as clientServer does for the client side, and is
+// unexported for the same reason: libetcd owns serving.
+func (b *EtcdImpl) peerServer() *http.Server {
 	b.peerHTTPOnce.Do(func() {
 		b.mu.Lock()
 		f := b.peerHTTPFactory
