@@ -152,3 +152,9 @@ func (b *EtcdImpl) Peers() []string {
 	}
 	return peers
 }
+
+func (b *EtcdImpl) Endpoints() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return urlsToEndpoints(b.cfg.AdvertiseClientUrls)
+}

@@ -14,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
@@ -64,6 +65,13 @@ type EtcdImpl struct {
 	// client URLs.
 	clientListenerFactory func() (net.Listener, error)
 	peerListenerFactory   func() (net.Listener, error)
+
+	// peerAdvertise overrides the peer advertise URLs (WithPeerListener's
+	// variadic arg): the addresses the cluster dials, distinct from the bound
+	// listener — for a proxy, load balancer, or tunnel. Empty means advertise
+	// the listener's own address. Applied both at config time and at listener
+	// materialization (see applyPeerURLs) so it survives the latter.
+	peerAdvertise []url.URL
 
 	// clientHTTPFactory/peerHTTPFactory produce the http.Servers libetcd
 	// serves each side's listener with (Handler = ClientHandler/PeerHandler),

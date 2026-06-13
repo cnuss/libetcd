@@ -111,18 +111,25 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 	return b
 }
 
-// WithPeerListener sets the socket the peer (raft) protocol is served on; the
-// listener is the only serving knob (libetcd serves everything it binds).
+// WithPeerListener sets the socket the peer (raft) protocol is served on, and
+// optionally the URLs to advertise for it.
 //
-//   - Non-nil lis: the peer listen+advertise URLs derive from its address
-//     (https if TLS-wrapped); the factory will hand it out at materialization.
-//   - Nil: a configuration error, latched — a raft member must advertise a
+//   - Non-nil lis: libetcd serves the peer protocol on lis. The factory hands
+//     it out at materialization.
+//   - advertiseURLs given: those are advertised to the cluster (what other
+//     members dial) while libetcd still serves lis — the proxy/LB/tunnel case
+//     where the advertised address differs from the bound socket. Unparseable
+//     entries are dropped; if none parse, the listener's address is advertised
+//     as a fallback (with a warning).
+//   - advertiseURLs omitted: the peer listen+advertise URLs both derive from
+//     the listener's address (https if TLS-wrapped).
+//   - Nil lis: a configuration error, latched — a raft member must advertise a
 //     peer URL, so the peer side cannot be turned off.
 //
 // Last call wins, but only until the listener has been materialized (the first
 // PeerListener() call, typically inside Start/Join): after that a changed
 // listener can't reach the running config, so the call latches an error.
-func (b *EtcdImpl) WithPeerListener(lis net.Listener) v1.Etcd {
+func (b *EtcdImpl) WithPeerListener(lis net.Listener, advertiseURLs ...string) v1.Etcd {
 	b.mutate(func() error {
 		if b.peerListenerMaterialized.Load() {
 			return fmt.Errorf("peer listener already materialized; configure before Start/Join")
@@ -131,9 +138,10 @@ func (b *EtcdImpl) WithPeerListener(lis net.Listener) v1.Etcd {
 			return fmt.Errorf("peer listener cannot be nil: a raft member must advertise a peer URL")
 		}
 		b.peerListenerFactory = func() (net.Listener, error) { return lis, nil }
-		u := listenerURL(lis)
-		b.cfg.ListenPeerUrls = []url.URL{u}
-		b.cfg.AdvertisePeerUrls = []url.URL{u}
+		// b.cfg.GetLogger() (not b.Logger(), which would re-lock b.mu while
+		// mutate already holds it) — parse runs under the lock.
+		b.peerAdvertise = parseAdvertiseURLs(advertiseURLs, b.cfg.GetLogger())
+		b.applyPeerURLs(lis)
 		return nil
 	})
 	return b

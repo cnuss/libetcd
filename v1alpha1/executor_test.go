@@ -187,6 +187,86 @@ func TestWithPeerListenerNil(t *testing.T) {
 	}
 }
 
+// TestWithPeerListenerAdvertiseURL: an explicit advertise URL is registered
+// with the cluster instead of the listener's own address (the proxy/tunnel
+// case), while libetcd still serves the bound listener.
+func TestWithPeerListenerAdvertiseURL(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const advertised = "http://node.example:2380"
+
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis, advertised)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	// The single member advertises the given URL, not the bound 127.0.0.1 port.
+	peers := e.Peers()
+	if len(peers) != 1 || peers[0] != advertised {
+		t.Fatalf("Peers() = %v, want [%q]", peers, advertised)
+	}
+	if strings.Contains(peers[0], lis.Addr().String()) {
+		t.Errorf("advertised the listener address %q; want the explicit URL", lis.Addr())
+	}
+	// libetcd still serves raft on the bound listener: /version reaches the peer handler.
+	if got := httpGet(t, lis.Addr().String(), "/version"); got == "" {
+		t.Error("/version empty on the bound listener; peer handler should serve it")
+	}
+}
+
+// TestWithPeerListenerAdvertiseFallback: when every advertise URL is
+// unparseable, the node falls back to the listener's own address (and the
+// fallback warning runs under the builder lock without deadlocking).
+func TestWithPeerListenerAdvertiseFallback(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis, "://nonsense", "\x7f://bad")
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	peers := e.Peers()
+	want := "http://" + lis.Addr().String()
+	if len(peers) != 1 || peers[0] != want {
+		t.Fatalf("Peers() = %v, want [%q] (listener fallback)", peers, want)
+	}
+}
+
+// TestEndpoints: a serving node reports its advertised client URL; a headless
+// client side reports none.
+func TestEndpoints(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir())
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	addr := e.ClientListener().Addr().String()
+	eps := e.Endpoints()
+	if len(eps) != 1 || !strings.Contains(eps[0], addr) {
+		t.Fatalf("Endpoints() = %v, want one URL containing %q", eps, addr)
+	}
+
+	h := v1alpha1.New()
+	h.WithDir(t.TempDir()).WithClientListener(nil)
+	if err := h.Start(); err != nil {
+		t.Fatalf("headless Start: %v", err)
+	}
+	defer h.Stop()
+	if eps := h.Endpoints(); len(eps) != 0 {
+		t.Errorf("headless Endpoints() = %v, want none", eps)
+	}
+}
+
 // TestWithClientListenerNil pins the headless client side: no listener bound,
 // nothing served, no client URLs registered — while the in-process Self client
 // still reads and writes the keyspace.
