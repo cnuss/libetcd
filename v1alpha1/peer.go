@@ -83,8 +83,8 @@ func (p *peerJoiner) WithClientListener(lis net.Listener) v1.EtcdPeer {
 	return p
 }
 
-func (p *peerJoiner) WithPeerListener(lis net.Listener) v1.EtcdPeer {
-	p.EtcdImpl.WithPeerListener(lis)
+func (p *peerJoiner) WithPeerListener(lis net.Listener, advertiseURLs ...string) v1.EtcdPeer {
+	p.EtcdImpl.WithPeerListener(lis, advertiseURLs...)
 	return p
 }
 
