@@ -1,0 +1,16 @@
+go 1.25.0
+
+// Workspace for local development: the library plus every standalone example
+// module. Each examples/<name> also carries its own go.mod + replace so it
+// builds on its own (and when copied out); the e2e harness and CI build them
+// with GOWORK=off to prove that standalone resolution.
+use (
+	.
+	./examples/async-join
+	./examples/dir-handoff
+	./examples/headless-leader
+	./examples/load-join
+	./examples/multi-node
+	./examples/restart-cycle
+	./examples/single-node
+)

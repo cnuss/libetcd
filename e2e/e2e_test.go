@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -22,7 +23,14 @@ func newRunner(t *testing.T, name string) *runner {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	if out, err := exec.Command("go", "build", "-o", bin, "../examples/"+name).CombinedOutput(); err != nil {
+	// Build the example as its own standalone module: cd into its directory
+	// (each examples/<name> carries its own go.mod + replace) and disable the
+	// workspace (GOWORK=off) so this proves the example resolves on its own,
+	// not via the repo's go.work. bin is absolute, so -o still lands there.
+	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd.Dir = filepath.Join("..", "examples", name)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build %s: %v\n%s", name, err, out)
 	}
 	return &runner{name: name, bin: bin}

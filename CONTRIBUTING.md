@@ -81,9 +81,14 @@ CI runs the same on every PR.
 
 Easy to get wrong from the diff alone:
 
-- **`examples/` is intentionally duplicated.** Each `main.go` is a
-  copy-pasteable starter; no shared internal package. Don't refactor it into
-  one.
+- **`examples/` is intentionally duplicated, and each is its own module.**
+  Every `examples/<name>/` carries its own `go.mod`/`go.sum` with
+  `replace github.com/cnuss/libetcd => ../..`, so it's a genuinely standalone,
+  copy-pasteable starter — no shared internal package, and it doesn't silently
+  inherit the root module's deps. The repo's `go.work` ties them together for
+  the dev loop; CI and the e2e harness build each example with `GOWORK=off` to
+  prove it still resolves on its own. Root `go build ./...` does **not** descend
+  into the example modules.
 - **`v1alpha1` tests start a real node.** They mint and (in `executor_test.go`)
   start an embedded etcd, so they take a second or two and need a free loopback
   port. Use `WithDir(t.TempDir())` and let `Start` auto-bind listeners.
@@ -104,9 +109,28 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 (there's no shared internal package — the duplication is intentional, so each
 example is copy-pasteable on its own).
 
-Print a single recognizable line so the e2e harness can assert on it, then add
-a row to the `cases` table in `e2e/e2e_test.go` (name + expected substring) and
-to the README's example table.
+Each example is its own module. Create:
+
+```sh
+mkdir -p examples/<name>
+# write main.go, then:
+cd examples/<name>
+cat > go.mod <<'EOF'
+module github.com/cnuss/libetcd/examples/<name>
+
+go 1.25.0
+
+require github.com/cnuss/libetcd v0.0.0
+
+replace github.com/cnuss/libetcd => ../..
+EOF
+GOWORK=off go mod tidy          # resolves go.sum + the example's direct deps
+```
+
+Then add the module to the `use (...)` list in the repo-root `go.work`, print a
+single recognizable line so the e2e harness can assert on it, add a row to the
+`cases` table in `e2e/e2e_test.go` (name + expected substring), and add a row to
+the README's example table.
 
 ## Branch / PR flow
 

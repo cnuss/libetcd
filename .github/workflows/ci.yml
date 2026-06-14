@@ -19,6 +19,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The committed go.work is a local dev-loop convenience (library + every
+# standalone example module in one workspace). CI builds with it off so every
+# step resolves like a real consumer: the library on its own, and each example
+# against its own go.mod + replace.
+env:
+  GOWORK: off
+
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
@@ -93,6 +100,17 @@ jobs:
 
       - name: lib tests
         run: go test ./v1alpha1/...
+
+      # Each example is its own module (own go.mod + replace ../..); root
+      # `go build ./...` doesn't descend into them, so build each on its own to
+      # catch breakage — the same path a user copying the example out would hit.
+      - name: build examples (standalone modules)
+        shell: bash
+        run: |
+          for d in examples/*/; do
+            echo "== building $d =="
+            (cd "$d" && go build -o /dev/null ./...) || exit 1
+          done
 
       - name: e2e
         run: go test -count=1 -v ./e2e/...
