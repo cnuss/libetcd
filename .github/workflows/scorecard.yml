@@ -9,6 +9,11 @@ on:
 
 permissions: read-all
 
+# The committed go.work is a dev-loop convenience; scan the library module on
+# its own, not the multi-module workspace.
+env:
+  GOWORK: off
+
 jobs:
   analysis:
     name: Scorecard analysis

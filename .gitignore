@@ -14,11 +14,22 @@ coverage.html
 # Local build artifacts
 /bin/
 /dist/
+
+# Example binaries — `go build ./...` inside an example dir emits one named
+# after the dir. Built standalone in CI/e2e with -o, never committed.
+/examples/async-join/async-join
+/examples/dir-handoff/dir-handoff
+/examples/headless-leader/headless-leader
+/examples/load-join/load-join
+/examples/multi-node/multi-node
+/examples/restart-cycle/restart-cycle
+/examples/single-node/single-node
+/examples/with-tunnel/with-tunnel
 /build/
 
-# Go workspace files (per-developer)
-go.work
-go.work.sum
+# go.work is committed deliberately: the library + every standalone example
+# module share one workspace for the dev loop. CI/e2e build with GOWORK=off to
+# prove standalone resolution. (See CONTRIBUTING → "Adding an example".)
 
 # IDE / editor cruft
 .idea/

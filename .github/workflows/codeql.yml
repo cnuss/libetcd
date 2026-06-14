@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# The committed go.work is a dev-loop convenience; analyze the library module
+# on its own, not the multi-module workspace.
+env:
+  GOWORK: off
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
