@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/pkg/v3/idutil"
+	"go.uber.org/zap"
 )
 
 // idGen is a process-global unique id generator using etcd's own idutil scheme
@@ -41,6 +42,44 @@ func listenerURL(l net.Listener) url.URL {
 		scheme = "https"
 	}
 	return url.URL{Scheme: scheme, Host: l.Addr().String()}
+}
+
+// parseAdvertiseURLs parses the WithPeerListener advertise-URL overrides,
+// dropping unparseable entries. Returns nil when none are given or none parse
+// (the caller falls back to the listener's own address); the logger notes the
+// fallback. lg is passed in (not read via b.Logger()) because callers hold
+// b.mu, which Logger() would re-lock.
+func parseAdvertiseURLs(advertiseURLs []string, lg *zap.Logger) []url.URL {
+	if len(advertiseURLs) == 0 {
+		return nil
+	}
+	var urls []url.URL
+	for _, s := range advertiseURLs {
+		u, err := url.Parse(s)
+		if err != nil {
+			continue
+		}
+		urls = append(urls, *u)
+	}
+	if len(urls) == 0 && lg != nil {
+		lg.Warn("no valid advertise peer URLs, falling back to the listener address",
+			zap.Strings("advertiseURLs", advertiseURLs))
+	}
+	return urls
+}
+
+// applyPeerURLs sets the peer listen + advertise URLs for the bound listener:
+// listen is always the listener's own address; advertise is the explicit
+// override (peerAdvertise) when set, otherwise the listener's address too.
+// Callers hold b.mu (it runs inside mutate or the PeerListener materialization).
+func (b *EtcdImpl) applyPeerURLs(lis net.Listener) {
+	u := listenerURL(lis)
+	b.cfg.ListenPeerUrls = []url.URL{u}
+	if len(b.peerAdvertise) > 0 {
+		b.cfg.AdvertisePeerUrls = b.peerAdvertise
+	} else {
+		b.cfg.AdvertisePeerUrls = []url.URL{u}
+	}
 }
 
 // listenerScheme returns "https" if l carries TLS, "http" otherwise. A TLS

@@ -61,15 +61,23 @@ type Client interface {
 	// URLs (discovered via Self), or nil if it can't be determined. The caller
 	// closes it.
 	Leader() *clientv3.Client
-	// Voters returns a networked clientv3.Client dialing the cluster's voting
+	// Client returns a networked clientv3.Client dialing the cluster's voting
 	// members (discovered via Self's MemberList; learners excluded), or nil if
-	// the configuration is invalid or the client can't be built.
-	Voters() *clientv3.Client
+	// the configuration is invalid or the client can't be built. This is the
+	// general handle for talking to the cluster from outside a single member,
+	// as opposed to Self (in-process) or Leader (pinned to the leader).
+	Client() *clientv3.Client
 	// Peers returns the flat list of every member's peer (raft) URLs, discovered
 	// via Self's MemberList (learners included). Pass it to From to join another
 	// node to this cluster. Empty if the server can't be minted or the member
 	// list is unavailable.
 	Peers() []string
+	// Endpoints returns this node's advertised client (v3 API) URLs — the
+	// addresses a networked client dials to reach this member. Empty when the
+	// client side is headless (WithClientListener(nil)) or the config is
+	// invalid. Unlike Peers, this is just this node's own advertised endpoints,
+	// not a cluster-wide list.
+	Endpoints() []string
 }
 
 // Builder configures an embedded etcd node. Configure it with the With* methods
@@ -124,19 +132,28 @@ type Builder[T any] interface {
 	// Last call wins. Replaces WithClientServing; there is no separate
 	// http.Server knob — compose ClientHandler yourself if you need one.
 	WithClientListener(lis net.Listener) T
-	// WithPeerListener sets the socket the peer (raft) protocol is served on:
+	// WithPeerListener sets the socket the peer (raft) protocol is served on,
+	// and optionally the URLs to advertise for it:
 	//
 	//   - Not called: Start auto-binds a free loopback listener and serves it
 	//     (the default — fine for same-host clusters; remote clusters need a
 	//     routable address).
-	//   - Non-nil lis: the peer listen+advertise URLs derive from the
-	//     listener's address (https if TLS-wrapped). Pass a listener bound to
-	//     :0 to claim a free port.
-	//   - Nil: a configuration error — a raft member must advertise a peer
+	//   - Non-nil lis: libetcd serves the peer protocol on lis.
+	//   - advertiseURLs given: those are advertised to the cluster (the
+	//     addresses other members dial), while libetcd still serves lis. This
+	//     separates the advertised address from the bound socket — for a
+	//     reverse proxy, load balancer, or tunnel (e.g. a NAT-traversing
+	//     listener fronted by a public URL). Unparseable entries are dropped;
+	//     if none parse, the listener's own address is advertised as a
+	//     fallback.
+	//   - advertiseURLs omitted: the peer listen+advertise URLs both derive
+	//     from the listener's address (https if TLS-wrapped). Pass a listener
+	//     bound to :0 to claim a free port.
+	//   - Nil lis: a configuration error — a raft member must advertise a peer
 	//     URL, so the peer side cannot be turned off.
 	//
 	// Last call wins. Replaces WithPeerServing.
-	WithPeerListener(lis net.Listener) T
+	WithPeerListener(lis net.Listener, advertiseURLs ...string) T
 }
 
 // Executor is the lifecycle of one node incarnation. A handle is single-use:

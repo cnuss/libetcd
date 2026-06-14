@@ -18,7 +18,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e.Voters()
+	cli := e.Client()
 	cli.Put(ctx, "greeting", "hello world")
 	resp, _ := cli.Get(ctx, "greeting")
 

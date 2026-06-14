@@ -146,9 +146,10 @@ func (b *EtcdImpl) PeerListener() net.Listener {
 		}
 		b.mutate(func() error {
 			b.peerListener = lis
-			u := listenerURL(lis)
-			b.cfg.ListenPeerUrls = []url.URL{u}
-			b.cfg.AdvertisePeerUrls = []url.URL{u}
+			// applyPeerURLs honors the WithPeerListener advertise override, so
+			// a proxy/tunnel address survives materialization instead of being
+			// re-derived from the bound listener.
+			b.applyPeerURLs(lis)
 			return nil
 		})
 	})
