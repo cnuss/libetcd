@@ -108,6 +108,10 @@ func main() {
 }
 ```
 
+`From()` with no peers bootstraps instead of joining: `Join` short-circuits to a
+fresh single-member start (exactly `New().Start()`), so a first node and the
+nodes that join it can share one `From(...).Join()` call site.
+
 Joins are safe to run concurrently — `Join` serializes membership changes
 through a lock held in the target cluster, so several nodes (even in separate
 processes) can call it at once. The lock writes transient coordination keys

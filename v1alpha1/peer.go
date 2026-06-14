@@ -92,13 +92,19 @@ func (p *peerJoiner) WithPeerListener(lis net.Listener, advertiseURLs ...string)
 // wedged cluster surfaces as an error instead of blocking forever.
 const defaultJoinTimeout = 90 * time.Second
 
-// Join brings this node into the cluster reachable at the configured peer URLs:
-// it discovers a client endpoint by scraping the peers' /members handlers, takes
-// a cluster-wide join lock (so concurrent joiners — including ones in other
-// processes — serialize), adds itself as a learner, starts, promotes itself to a
-// voting member once caught up, and confirms the new voter is replicating before
-// releasing the lock. It blocks until the node is a voting member or the
-// bounding context elapses (defaultJoinTimeout if WithContext set no deadline).
+// Join brings this node into the cluster reachable at the configured peer URLs,
+// over the peer (raft) listener: it POSTs itself to a peer's /libetcd/v1/join
+// endpoint (added as a learner under a cluster-wide join lock, with a seed
+// snapshot streamed back), restores the snapshot, starts, and promotes itself
+// to a voting member once caught up. It blocks until the node is a voting
+// member or the bounding context elapses (defaultJoinTimeout if WithContext set
+// no deadline).
+//
+// With no peer URLs (From() called with no arguments), there is nothing to
+// join: Join bootstraps a fresh single-member cluster, behaving exactly like
+// New().Start(). It short-circuits to Start before any of the join machinery
+// below, so none of the join-failure semantics (rollback, single-use handle)
+// apply to a bootstrap.
 //
 // On failure after the member-add, Join rolls back: it removes the half-joined
 // member from the cluster, then stops the local server if it started — in that
@@ -114,6 +120,15 @@ const defaultJoinTimeout = 90 * time.Second
 // handle (the embedded server is single-use): further Join calls fail
 // immediately, and another attempt needs a fresh From(...) handle.
 func (p *peerJoiner) Join() (err error) {
+	// No peers given (From() with no arguments) is a bootstrap, not a join:
+	// there is nothing to join, so start a fresh single-member cluster. Checked
+	// on the raw argument count — From("typo") that sanitizes to zero peers is
+	// a bad-input error below, not a silent bootstrap. Short-circuit to Start
+	// before any join machinery (single-flight latch, member-add, rollback);
+	// Start has its own once-guard, so a second call is the usual no-op.
+	if len(p.peers) == 0 {
+		return p.Start()
+	}
 	if p.exhausted.Load() {
 		return errors.New("join: this handle's server was started and stopped by a failed join and cannot be reused — build a fresh From(...) handle and try again")
 	}

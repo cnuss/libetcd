@@ -326,3 +326,42 @@ func TestWithListenerAfterMaterializeErrors(t *testing.T) {
 		t.Fatal("Server non-nil after a post-materialization listener setter; expected the latched config error")
 	}
 }
+
+// TestFromBootstrap: From() with no peers is a bootstrap — Join short-circuits
+// to Start and the node is a usable single-member cluster (issue #77 NEED 2).
+func TestFromBootstrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	p := v1alpha1.From() // no peers
+	p.WithDir(t.TempDir()).WithContext(ctx)
+	if err := p.Join(); err != nil {
+		t.Fatalf("From().Join() bootstrap: %v", err)
+	}
+	defer p.Stop()
+
+	if _, err := p.Client().Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put via Client(): %v", err)
+	}
+	resp, err := p.Self().Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get via Self(): %v", err)
+	}
+	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
+		t.Fatalf("Get = %v, want value %q", resp.Kvs, "v")
+	}
+}
+
+// TestFromBadPeersStillErrors: From with peers that all sanitize to nothing is
+// a bad-input error, not a silent bootstrap — the bootstrap is keyed on the raw
+// argument count, not the sanitized result.
+func TestFromBadPeersStillErrors(t *testing.T) {
+	p := v1alpha1.From("htp://bad") // one unparseable peer (wrong scheme)
+	p.WithDir(t.TempDir())
+	t.Cleanup(func() { _ = p.Stop() })
+
+	err := p.Join()
+	if err == nil || !strings.Contains(err.Error(), "no valid peer URLs") {
+		t.Fatalf("Join = %v, want no-valid-peer-URLs error (not a bootstrap)", err)
+	}
+}

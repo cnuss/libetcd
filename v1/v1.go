@@ -184,11 +184,12 @@ type Etcd interface {
 	Executor
 }
 
-// EtcdPeer is the join-only surface returned by From: a node configured to join
-// an existing cluster (reachable at a set of peer URLs) rather than to bootstrap
-// a fresh one. It exposes the Client accessors and the Builder setters (which
-// chain back to EtcdPeer), but not Start — the lifecycle entries are Join and
-// Stop.
+// EtcdPeer is the surface returned by From: a node that joins an existing
+// cluster (when From was given peer URLs) or bootstraps a fresh one (when it
+// wasn't). It exposes the Client accessors and the Builder setters (which chain
+// back to EtcdPeer), but not Start or the server handles — the lifecycle
+// entries are Join and Stop, and a node needing the full Etcd surface
+// (Server/GrpcServer/handlers) is built with New instead.
 type EtcdPeer interface {
 	Client
 	Builder[EtcdPeer]
@@ -202,6 +203,12 @@ type EtcdPeer interface {
 	// so it is libetcd-to-libetcd. It blocks until the node is voting or the
 	// bounding context elapses; on failure after the member-add it rolls the
 	// half-joined member back out of the cluster.
+	//
+	// When From was called with no peer URLs, there is nothing to join: Join
+	// bootstraps a fresh single-member cluster instead, behaving exactly like
+	// New().Start() (none of the join-failure semantics below apply). This is
+	// how a first node and the nodes that join it can share one From()/Join()
+	// call site.
 	//
 	// Join is for first-time membership only. Restarting a member that already
 	// joined is Start's job: construct a fresh New() builder over its data dir
