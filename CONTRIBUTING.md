@@ -118,7 +118,7 @@ cd examples/<name>
 cat > go.mod <<'EOF'
 module github.com/cnuss/libetcd/examples/<name>
 
-go 1.25.0
+go 1.26
 
 require github.com/cnuss/libetcd v0.0.0
 
@@ -130,7 +130,11 @@ GOWORK=off go mod tidy          # resolves go.sum + the example's direct deps
 Then add the module to the `use (...)` list in the repo-root `go.work`, print a
 single recognizable line so the e2e harness can assert on it, add a row to the
 `cases` table in `e2e/e2e_test.go` (name + expected substring), and add a row to
-the README's example table.
+the README's example table. The e2e harness builds each example's module
+standalone and runs the binary, so an example that reaches the network at
+runtime (e.g. `with-tunnel` opens real Cloudflare tunnels — libtunnel embeds the
+client, no external binary needed) needs that connectivity in the e2e
+environment.
 
 ## Branch / PR flow
 

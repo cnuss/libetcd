@@ -273,6 +273,7 @@ Self-contained programs in [`./examples`](./examples):
 | `dir-handoff` | Stop a node, then boot a brand-new builder over the same data dir (process-restart semantics); verify every key survived. |
 | `restart-cycle` | Stop every member of a cluster, recreate them all with fresh builders over the same dirs + addresses, verify zero loss — twice. |
 | `headless-leader` | Bootstrap a node serving no client traffic (`WithClientListener(nil)`); join two nodes to it over the peer transport; verify replication and that one member is headless. |
+| `with-tunnel` | Two nodes across NAT via [libtunnel](https://github.com/cnuss/libtunnel): each serves a local peer listener but advertises a public Cloudflare tunnel URL (`WithPeerListener(lis, url)`); `From()`/`Join()` bootstrap then join, and the write replicates across the tunnels. |
 
 Run one locally:
 

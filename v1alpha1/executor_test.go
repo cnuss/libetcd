@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +219,28 @@ func TestWithPeerListenerAdvertiseURL(t *testing.T) {
 	}
 }
 
+// TestWithPeerListenerAdvertiseNormalize: an advertise URL without an explicit
+// port (a public tunnel URL like https://host/) is normalized to host:port with
+// the scheme's default port and no path, since etcd peer URLs require host:port.
+func TestWithPeerListenerAdvertiseNormalize(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis, "https://node.example.com/")
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	peers := e.Peers()
+	want := "https://node.example.com:443"
+	if len(peers) != 1 || peers[0] != want {
+		t.Fatalf("Peers() = %v, want [%q] (port filled, path dropped)", peers, want)
+	}
+}
+
 // TestWithPeerListenerAdvertiseFallback: when every advertise URL is
 // unparseable, the node falls back to the listener's own address (and the
 // fallback warning runs under the builder lock without deadlocking).
@@ -363,5 +386,32 @@ func TestFromBadPeersStillErrors(t *testing.T) {
 	err := p.Join()
 	if err == nil || !strings.Contains(err.Error(), "no valid peer URLs") {
 		t.Fatalf("Join = %v, want no-valid-peer-URLs error (not a bootstrap)", err)
+	}
+}
+
+// TestWithPeerListenerMultiAdvertiseBootstrap: a single bootstrap member can
+// advertise multiple peer URLs — the single-member auto-sync lists them all in
+// initial-cluster, satisfying etcd's VerifyBootstrap (advertise set must equal
+// the initial-cluster URL set for this member).
+func TestWithPeerListenerMultiAdvertiseBootstrap(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis,
+		"https://a.example.com:2380",
+		"https://b.example.com:2380",
+	)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start with two advertise URLs: %v", err)
+	}
+	defer e.Stop()
+
+	got := e.Peers()
+	slices.Sort(got)
+	want := []string{"https://a.example.com:2380", "https://b.example.com:2380"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Peers() = %v, want %v", got, want)
 	}
 }

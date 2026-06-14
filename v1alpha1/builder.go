@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 
 	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	"go.etcd.io/etcd/server/v3/config"
@@ -164,10 +165,18 @@ func (b *EtcdImpl) mutate(f func() error) {
 		return
 	}
 	// Single-member auto-sync: keep InitialCluster pointing at this node so a
-	// changed name or peer URL doesn't break minting. Join pins the cluster
-	// (clusterSet) for a multi-member join and takes over InitialCluster.
+	// changed name or peer URL doesn't break minting. It must list *every*
+	// advertise peer URL (not just the first) — etcd's VerifyBootstrap requires
+	// this node's initial-cluster URL set to equal its advertise-peer-urls set,
+	// so a member advertising several (e.g. multiple tunnels) needs them all
+	// here. Join pins the cluster (clusterSet) for a multi-member join and takes
+	// over InitialCluster.
 	if !b.clusterSet.Load() && len(b.cfg.AdvertisePeerUrls) > 0 {
-		b.cfg.InitialCluster = b.cfg.Name + "=" + b.cfg.AdvertisePeerUrls[0].String()
+		parts := make([]string, len(b.cfg.AdvertisePeerUrls))
+		for i, u := range b.cfg.AdvertisePeerUrls {
+			parts[i] = b.cfg.Name + "=" + u.String()
+		}
+		b.cfg.InitialCluster = strings.Join(parts, ",")
 	}
 	if err := b.validate(); err != nil {
 		b.cancel(err)
