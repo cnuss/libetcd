@@ -25,6 +25,7 @@ concurrency:
 # against its own go.mod + replace.
 env:
   GOWORK: off
+  CGO_ENABLED: "0"
 
 jobs:
   ci:

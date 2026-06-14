@@ -13,6 +13,7 @@ permissions: read-all
 # its own, not the multi-module workspace.
 env:
   GOWORK: off
+  CGO_ENABLED: "0"
 
 jobs:
   analysis:

@@ -1,5 +1,10 @@
 .PHONY: all check fmt fmt-check vet build windows test e2e run
 
+# The library and its deps are pure Go; build everything cgo-free, matching CI
+# (workflow env CGO_ENABLED=0). This also keeps the cgo-heavy with-tunnel deps
+# (cloudflared) building pure-Go on platforms with no working cgo toolchain.
+export CGO_ENABLED := 0
+
 # Default: everything CI runs except the auto-bump release step.
 all: fmt-check vet build windows test e2e
 
