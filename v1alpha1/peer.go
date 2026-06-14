@@ -141,7 +141,7 @@ func (p *peerJoiner) Join() (err error) {
 	if cause := context.Cause(p.ctx); cause != nil {
 		return fmt.Errorf("join: configuration error: %w", cause)
 	}
-	// A server minted before Join (any client accessor — Self/Leader/Voters/
+	// A server minted before Join (any client accessor — Self/Leader/Client/
 	// Peers — mints it) was built from the bootstrap config; Join's later
 	// InitialCluster/ClusterState mutations can't reach the cached server, so
 	// it would boot a divergent single-node cluster and the join would fail
@@ -152,7 +152,7 @@ func (p *peerJoiner) Join() (err error) {
 	minted := p.srv != nil
 	p.mu.Unlock()
 	if minted {
-		return errors.New("join: server already minted (a client accessor like Self/Leader/Voters/Peers was called before Join); call Join first, or build a fresh From(...) handle")
+		return errors.New("join: server already minted (a client accessor like Self/Leader/Client/Peers was called before Join); call Join first, or build a fresh From(...) handle")
 	}
 
 	logger := p.Logger()

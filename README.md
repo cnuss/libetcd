@@ -47,7 +47,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e.Voters()
+	cli := e.Client()
 	cli.Put(ctx, "greeting", "hello world")
 	resp, _ := cli.Get(ctx, "greeting")
 
@@ -227,7 +227,7 @@ type Server interface {
 type Client interface {
     Self() *clientv3.Client    // in-process client to this node
     Leader() *clientv3.Client  // client pinned to the leader
-    Voters() *clientv3.Client  // networked client (dials voting members)
+    Client() *clientv3.Client  // networked client (dials voting members)
     Peers() []string           // members' peer (raft) URLs; feed to From
 }
 ```
@@ -239,7 +239,7 @@ setters (chaining back to `EtcdPeer`), plus `Join`/`Stop` — but no `Start`.
 ```go
 // EtcdPeer — join an existing cluster from a list of peer URLs.
 type EtcdPeer interface {
-    Client            // Self / Leader / Voters / Peers
+    Client            // Self / Leader / Client / Peers
     Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
     Join() error      // join over the peer listener: POST /libetcd/v1/join, restore the
                       // streamed snapshot, start, promote to voting; token-authorized,

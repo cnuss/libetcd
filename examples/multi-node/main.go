@@ -22,7 +22,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cli := e1.Voters()
+	cli := e1.Client()
 	if _, err := cli.Put(ctx, "greeting", "hello world"); err != nil {
 		log.Fatal(err)
 	}

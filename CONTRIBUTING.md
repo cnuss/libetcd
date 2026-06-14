@@ -15,7 +15,7 @@ Deep-link by filename; line numbers will drift.
 | Type (`EtcdImpl`) + `New` + `From`             | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder methods + config machinery             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
 | Server handles                                 | [`v1alpha1/server.go`](./v1alpha1/server.go)                     |
-| Client accessors (`Self`/`Leader`/`Voters`/`Peers`) | [`v1alpha1/client.go`](./v1alpha1/client.go)               |
+| Client accessors (`Self`/`Leader`/`Client`/`Peers`) | [`v1alpha1/client.go`](./v1alpha1/client.go)               |
 | Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
 | Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v1alpha1/peer.go`](./v1alpha1/peer.go)                         |
 | Peer-port join protocol (`/libetcd/v1/join`)   | [`v1alpha1/join/`](./v1alpha1/join)                              |

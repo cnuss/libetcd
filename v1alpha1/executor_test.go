@@ -71,7 +71,7 @@ func TestJoin(t *testing.T) {
 	}
 	defer e1.Stop()
 
-	if _, err := e1.Voters().Put(ctx, "k", "v"); err != nil {
+	if _, err := e1.Client().Put(ctx, "k", "v"); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 

@@ -78,12 +78,12 @@ func main() {
 		log.Fatalf("data loss: %d/%d keys survived", got, peerCount)
 	}
 
-	// Voters() dials a new networked client — close it once we've printed.
-	voters := leader.Voters()
-	if voters == nil {
-		log.Fatal("voters client is nil")
+	// Client() dials a new networked client — close it once we've printed.
+	cli := leader.Client()
+	if cli == nil {
+		log.Fatal("cluster client is nil")
 	}
-	defer voters.Close()
-	fmt.Printf("voters: %v\n", voters.Endpoints())
+	defer cli.Close()
+	fmt.Printf("members: %v\n", cli.Endpoints())
 	fmt.Printf("all %d puts survived\n", peerCount)
 }

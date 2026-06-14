@@ -73,12 +73,12 @@ func (b *EtcdImpl) Leader() *clientv3.Client {
 	return cli
 }
 
-// Voters returns a networked clientv3.Client that dials the cluster's voting
+// Client returns a networked clientv3.Client that dials the cluster's voting
 // members (learners excluded). It discovers the voters via the in-process Self
 // client's MemberList; if that's unavailable it falls back to this node's own
 // client URLs. Returns nil if the configuration is invalid or the client can't
 // be built (the underlying error is latched as the builder cause).
-func (b *EtcdImpl) Voters() *clientv3.Client {
+func (b *EtcdImpl) Client() *clientv3.Client {
 	b.mu.Lock()
 	cause := context.Cause(b.ctx)
 	eps := urlsToEndpoints(b.cfg.AdvertiseClientUrls) // fallback: self

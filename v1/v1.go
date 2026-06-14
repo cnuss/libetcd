@@ -61,10 +61,12 @@ type Client interface {
 	// URLs (discovered via Self), or nil if it can't be determined. The caller
 	// closes it.
 	Leader() *clientv3.Client
-	// Voters returns a networked clientv3.Client dialing the cluster's voting
+	// Client returns a networked clientv3.Client dialing the cluster's voting
 	// members (discovered via Self's MemberList; learners excluded), or nil if
-	// the configuration is invalid or the client can't be built.
-	Voters() *clientv3.Client
+	// the configuration is invalid or the client can't be built. This is the
+	// general handle for talking to the cluster from outside a single member,
+	// as opposed to Self (in-process) or Leader (pinned to the leader).
+	Client() *clientv3.Client
 	// Peers returns the flat list of every member's peer (raft) URLs, discovered
 	// via Self's MemberList (learners included). Pass it to From to join another
 	// node to this cluster. Empty if the server can't be minted or the member
