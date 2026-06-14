@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +219,28 @@ func TestWithPeerListenerAdvertiseURL(t *testing.T) {
 	}
 }
 
+// TestWithPeerListenerAdvertiseNormalize: an advertise URL without an explicit
+// port (a public tunnel URL like https://host/) is normalized to host:port with
+// the scheme's default port and no path, since etcd peer URLs require host:port.
+func TestWithPeerListenerAdvertiseNormalize(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis, "https://node.example.com/")
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	peers := e.Peers()
+	want := "https://node.example.com:443"
+	if len(peers) != 1 || peers[0] != want {
+		t.Fatalf("Peers() = %v, want [%q] (port filled, path dropped)", peers, want)
+	}
+}
+
 // TestWithPeerListenerAdvertiseFallback: when every advertise URL is
 // unparseable, the node falls back to the listener's own address (and the
 // fallback warning runs under the builder lock without deadlocking).
@@ -324,5 +347,71 @@ func TestWithListenerAfterMaterializeErrors(t *testing.T) {
 
 	if e.Server() != nil {
 		t.Fatal("Server non-nil after a post-materialization listener setter; expected the latched config error")
+	}
+}
+
+// TestFromBootstrap: From() with no peers is a bootstrap — Join short-circuits
+// to Start and the node is a usable single-member cluster (issue #77 NEED 2).
+func TestFromBootstrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	p := v1alpha1.From() // no peers
+	p.WithDir(t.TempDir()).WithContext(ctx)
+	if err := p.Join(); err != nil {
+		t.Fatalf("From().Join() bootstrap: %v", err)
+	}
+	defer p.Stop()
+
+	if _, err := p.Client().Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put via Client(): %v", err)
+	}
+	resp, err := p.Self().Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get via Self(): %v", err)
+	}
+	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v" {
+		t.Fatalf("Get = %v, want value %q", resp.Kvs, "v")
+	}
+}
+
+// TestFromBadPeersStillErrors: From with peers that all sanitize to nothing is
+// a bad-input error, not a silent bootstrap — the bootstrap is keyed on the raw
+// argument count, not the sanitized result.
+func TestFromBadPeersStillErrors(t *testing.T) {
+	p := v1alpha1.From("htp://bad") // one unparseable peer (wrong scheme)
+	p.WithDir(t.TempDir())
+	t.Cleanup(func() { _ = p.Stop() })
+
+	err := p.Join()
+	if err == nil || !strings.Contains(err.Error(), "no valid peer URLs") {
+		t.Fatalf("Join = %v, want no-valid-peer-URLs error (not a bootstrap)", err)
+	}
+}
+
+// TestWithPeerListenerMultiAdvertiseBootstrap: a single bootstrap member can
+// advertise multiple peer URLs — the single-member auto-sync lists them all in
+// initial-cluster, satisfying etcd's VerifyBootstrap (advertise set must equal
+// the initial-cluster URL set for this member).
+func TestWithPeerListenerMultiAdvertiseBootstrap(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(lis,
+		"https://a.example.com:2380",
+		"https://b.example.com:2380",
+	)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start with two advertise URLs: %v", err)
+	}
+	defer e.Stop()
+
+	got := e.Peers()
+	slices.Sort(got)
+	want := []string{"https://a.example.com:2380", "https://b.example.com:2380"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Peers() = %v, want %v", got, want)
 	}
 }

@@ -1,4 +1,4 @@
-go 1.25.0
+go 1.26
 
 // Workspace for local development: the library plus every standalone example
 // module. Each examples/<name> also carries its own go.mod + replace so it
@@ -13,4 +13,5 @@ use (
 	./examples/multi-node
 	./examples/restart-cycle
 	./examples/single-node
+	./examples/with-tunnel
 )

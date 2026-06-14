@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"sort"
 	"time"
 
 	"go.etcd.io/etcd/pkg/v3/idutil"
@@ -44,27 +45,48 @@ func listenerURL(l net.Listener) url.URL {
 	return url.URL{Scheme: scheme, Host: l.Addr().String()}
 }
 
-// parseAdvertiseURLs parses the WithPeerListener advertise-URL overrides,
-// dropping unparseable entries. Returns nil when none are given or none parse
-// (the caller falls back to the listener's own address); the logger notes the
-// fallback. lg is passed in (not read via b.Logger()) because callers hold
-// b.mu, which Logger() would re-lock.
+// parseAdvertiseURLs parses the WithPeerListener advertise-URL overrides into
+// peer URLs etcd will accept: an explicit host:port (a missing port is filled
+// from the scheme — https→443, http→80, since etcd requires host:port) and no
+// path (etcd peer URLs carry none, so a trailing slash is dropped). A public
+// tunnel URL like https://x.trycloudflare.com/ becomes https://x.trycloudflare.com:443.
+// Unparseable or hostless entries are dropped. Returns nil when none are given
+// or none survive (the caller falls back to the listener's own address); the
+// logger notes the fallback. lg is passed in (not read via b.Logger()) because
+// callers hold b.mu, which Logger() would re-lock.
 func parseAdvertiseURLs(advertiseURLs []string, lg *zap.Logger) []url.URL {
 	if len(advertiseURLs) == 0 {
 		return nil
 	}
 	var urls []url.URL
+	seen := make(map[string]struct{}, len(advertiseURLs))
 	for _, s := range advertiseURLs {
 		u, err := url.Parse(s)
-		if err != nil {
+		if err != nil || u.Hostname() == "" {
 			continue
 		}
+		if u.Port() == "" {
+			port := "80"
+			if u.Scheme == "https" {
+				port = "443"
+			}
+			u.Host = net.JoinHostPort(u.Hostname(), port)
+		}
+		u.Path = "" // etcd peer URLs carry no path (drops a trailing slash)
+		// Dedup after normalization, so entries that differ only by a trailing
+		// slash or an implicit port collapse to one.
+		if _, dup := seen[u.String()]; dup {
+			continue
+		}
+		seen[u.String()] = struct{}{}
 		urls = append(urls, *u)
 	}
 	if len(urls) == 0 && lg != nil {
 		lg.Warn("no valid advertise peer URLs, falling back to the listener address",
 			zap.Strings("advertiseURLs", advertiseURLs))
 	}
+	// Sort for a stable advertise order regardless of argument order.
+	sort.Slice(urls, func(i, j int) bool { return urls[i].String() < urls[j].String() })
 	return urls
 }
 

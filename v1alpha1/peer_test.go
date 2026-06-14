@@ -180,3 +180,34 @@ func TestJoinFailsFastOnLoopbackMismatch(t *testing.T) {
 		t.Fatalf("Join took %v, want fail-fast before discovery", elapsed)
 	}
 }
+
+// TestParseAdvertiseURLs covers the WithPeerListener advertise-URL
+// normalization: a missing port is filled from the scheme, a path/trailing
+// slash is dropped, entries that normalize to the same value dedup, the result
+// is sorted, and unparseable/hostless entries are discarded.
+func TestParseAdvertiseURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty", nil, nil},
+		{"fill default https port + drop path", []string{"https://h.example/"}, []string{"https://h.example:443"}},
+		{"fill default http port", []string{"http://h.example"}, []string{"http://h.example:80"}},
+		{"explicit port kept", []string{"http://h.example:2380"}, []string{"http://h.example:2380"}},
+		{
+			"dedup after normalize, sorted",
+			[]string{"https://b.example", "https://a.example:443/", "https://a.example"},
+			[]string{"https://a.example:443", "https://b.example:443"},
+		},
+		{"drop unparseable + hostless", []string{"://nope", "https://", "http://ok:7"}, []string{"http://ok:7"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := urlsToEndpoints(parseAdvertiseURLs(tc.in, nil))
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("parseAdvertiseURLs(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

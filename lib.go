@@ -37,12 +37,16 @@ func New() v1.Etcd {
 	return v1alpha1.New()
 }
 
-// From returns a join-only node for an existing cluster reachable at the given
-// peer URLs (e.g. another node's Peers()). Peers are plain strings — bare
-// host:port, http://, or https:// entries are accepted; at Join time the
-// library trims them, defaults a missing scheme to http, de-duplicates, and
-// silently drops any it can't parse. Configure the node with the With* methods,
-// then call Join.
+// From returns a node for an existing cluster reachable at the given peer URLs
+// (e.g. another node's Peers()), or — called with no peer URLs — a fresh node
+// that bootstraps a new cluster. Either way it's the same join-only handle:
+// configure it with the With* methods, then call Join. With peers, Join brings
+// the node into that cluster; with none, Join bootstraps (see EtcdPeer.Join),
+// so From() ... Join() is the one entry point for both roles.
+//
+// Peers are plain strings — bare host:port, http://, or https:// entries are
+// accepted; at Join time the library trims them, defaults a missing scheme to
+// http, de-duplicates, and silently drops any it can't parse.
 //
 // Join runs entirely over the cluster's peer (raft) listener: the node POSTs
 // itself to a peer's /libetcd/v1/join endpoint, restores the snapshot the peer
