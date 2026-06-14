@@ -15,8 +15,8 @@ github.com/cloudflare/cloudflared v0.0.0-20260612062426-68620efbce4c h1:tVGZcs6B
 github.com/cloudflare/cloudflared v0.0.0-20260612062426-68620efbce4c/go.mod h1:dF4V06NkqLhcFEqSEhw+qPSI+K54g0W79dWAgoxRsik=
 github.com/cloudwego/base64x v0.1.7 h1:NppS+Fgzg5ovhn4NkUXaDT3x9jldgH5ToMCqzBSi2zI=
 github.com/cloudwego/base64x v0.1.7/go.mod h1:Cu1PV9zfrSf7ET2tIbWbbEy7jO7HHJ13q4X2SQ8aWYg=
-github.com/cnuss/libtunnel v0.0.5 h1:eH+jf3VYIp/ZJ0j8raN6jvyy7IeU73HHFDBfGo0JHvY=
-github.com/cnuss/libtunnel v0.0.5/go.mod h1:SieWm+dSA2jN6p790vqOCnvXNCq7jeOIXKK4ozcmlUw=
+github.com/cnuss/libtunnel v0.0.6 h1:pyhBLuEWboXZUsLzFiTSXyoW7wF+EXodMB8xu3rnIh8=
+github.com/cnuss/libtunnel v0.0.6/go.mod h1:SieWm+dSA2jN6p790vqOCnvXNCq7jeOIXKK4ozcmlUw=
 github.com/cockroachdb/datadriven v1.0.2 h1:H9MtNqVoVhvd9nCBwOyDjUEdZCREqbIdCJD93PBm/jA=
 github.com/cockroachdb/datadriven v1.0.2/go.mod h1:a9RdTaap04u637JoCzcUoIcDmvwSUtcUFtT/C3kJlTU=
 github.com/coreos/go-oidc/v3 v3.17.0 h1:hWBGaQfbi0iVviX4ibC7bk8OKT5qNr4klBaCHVNvehc=
