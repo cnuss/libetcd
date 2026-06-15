@@ -117,13 +117,16 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 //
 //   - Non-nil lis: libetcd serves the peer protocol on lis. The factory hands
 //     it out at materialization.
+//
 //   - advertiseURLs given: those are advertised to the cluster (what other
 //     members dial) while libetcd still serves lis — the proxy/LB/tunnel case
 //     where the advertised address differs from the bound socket. Unparseable
 //     entries are dropped; if none parse, the listener's address is advertised
 //     as a fallback (with a warning).
+//
 //   - advertiseURLs omitted: the peer listen+advertise URLs both derive from
 //     the listener's address (https if TLS-wrapped).
+//
 //   - Nil lis + advertiseURLs given: BYO peer serving. libetcd binds and
 //     serves nothing on the peer side; something else serves PeerHandler()
 //     (over PeerPaths()) at the advertised URLs — a custom mux, a
@@ -140,6 +143,7 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 //     joining node needs no inbound raft during Join — the snapshot seed boots
 //     it caught up and it dials out to promote — so serving after Join is in
 //     time for steady-state replication.
+//
 //   - Nil lis + no advertiseURLs: a configuration error, latched — with
 //     nothing to bind and nothing to advertise, a raft member has no peer
 //     address at all.
