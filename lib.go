@@ -26,6 +26,16 @@ import (
 	"github.com/cnuss/libetcd/v1alpha1"
 )
 
+// Etcd is the node handle returned by New — the stable v1.Etcd surface
+// (Server, Client, Builder, Executor) re-exported at the façade so callers can
+// name it as libetcd.Etcd without importing the v1 package.
+type Etcd = v1.Etcd
+
+// EtcdPeer is the join handle returned by From — the stable v1.EtcdPeer surface
+// re-exported at the façade so callers can name it as libetcd.EtcdPeer without
+// importing the v1 package.
+type EtcdPeer = v1.EtcdPeer
+
 // New returns an embedded etcd node. Configure it with the With* methods (they
 // mutate in place and chain), then call Start; Stop shuts it down.
 //
@@ -33,7 +43,7 @@ import (
 //	e.WithDir("/tmp/data")
 //	if err := e.Start(); err != nil { /* ... */ }
 //	defer e.Stop()
-func New() v1.Etcd {
+func New() Etcd {
 	return v1alpha1.New()
 }
 
@@ -56,6 +66,6 @@ func New() v1.Etcd {
 // The join is authorized by the cluster token (WithClusterToken), so it is
 // libetcd-to-libetcd: a stock etcd cluster doesn't serve the endpoint. The
 // token gate is only meaningful over a TLS peer listener; see issue #74.
-func From(peers ...string) v1.EtcdPeer {
+func From(peers ...string) EtcdPeer {
 	return v1alpha1.From(peers...)
 }
