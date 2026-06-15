@@ -207,7 +207,7 @@ type Builder[T any] interface {
     WithLog(level string, w io.Writer) T   // route logs to w at level; silent by default
     WithContext(ctx context.Context) T     // cancel ctx => graceful Stop
     WithClientListener(l net.Listener) T   // client (v3 API) socket; nil = headless (no client serving/URLs)
-    WithPeerListener(l net.Listener) T     // peer (raft) socket; nil is a config error
+    WithPeerListener(l net.Listener, advertiseURLs ...string) T // peer (raft) socket; nil+URLs = BYO serving; nil+none is a config error
 }
 
 // Executor — lifecycle.
@@ -264,6 +264,19 @@ gate is only meaningful over a TLS peer listener (a cleartext one carries the
 token in the clear), so peer-listener TLS for the join path is still being
 worked out ([#74](https://github.com/cnuss/libetcd/issues/74)).
 
+**BYO peer serving.** `WithPeerListener(nil, advertiseURLs...)` tells libetcd to
+bind no peer socket of its own: something else serves the peer (raft) protocol —
+mount `PeerHandler()` over `PeerPaths()` on your own `http.Server`, reachable at
+the advertised URLs the cluster dials. Use it to share a listener, multiplex
+raft alongside your own routes, or front the peer protocol with a tunnel/proxy
+(see `with-tunnel`). Mount the handler only **after** `Start`/`Join` returns —
+calling `PeerHandler()` earlier mints the server prematurely. A joining node
+needs no inbound raft during `Join` (the snapshot seed boots it caught up and it
+dials out to promote), so serving right after `Join` returns is in time for
+steady-state replication. `WithPeerListener(nil)` with no advertise URLs is a
+config error — a raft member must serve a socket or advertise where its peer
+protocol is served.
+
 ## Examples
 
 Self-contained programs in [`./examples`](./examples):
@@ -277,7 +290,7 @@ Self-contained programs in [`./examples`](./examples):
 | `dir-handoff` | Stop a node, then boot a brand-new builder over the same data dir (process-restart semantics); verify every key survived. |
 | `restart-cycle` | Stop every member of a cluster, recreate them all with fresh builders over the same dirs + addresses, verify zero loss — twice. |
 | `headless-leader` | Bootstrap a node serving no client traffic (`WithClientListener(nil)`); join two nodes to it over the peer transport; verify replication and that one member is headless. |
-| `with-tunnel` | Two nodes across NAT via [libtunnel](https://github.com/cnuss/libtunnel): each serves a local peer listener but advertises a public Cloudflare tunnel URL (`WithPeerListener(lis, url)`); `From()`/`Join()` bootstrap then join, and the write replicates across the tunnels. |
+| `with-tunnel` | A three-node cluster across NAT via [libtunnel](https://github.com/cnuss/libtunnel): BYO peer serving (`WithPeerListener(nil, tunnelURL)`) — each node serves libetcd's `PeerHandler()` on its own listener (fronted by a public Cloudflare tunnel) after `Join()` returns; `From()`/`Join()` bootstrap then join, and every node's write replicates across the tunnels (asserts 3 voters, 3 keys). |
 
 Run one locally:
 

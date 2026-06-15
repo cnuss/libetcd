@@ -17,70 +17,109 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
+	"net/http"
 
 	"github.com/cnuss/libetcd"
+	v1 "github.com/cnuss/libetcd/v1"
 	"github.com/cnuss/libtunnel"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var node v1.EtcdPeer = nil
+	var cli *clientv3.Client
+	var err error
+	var num = 3
 
-	// Node 1: bind a local peer listener, front it with a tunnel, and bootstrap
-	// the cluster (From() with no peers → Join() starts a fresh single member).
-	lis1, err := net.Listen("tcp", "0.0.0.0:0")
+	for i := range num {
+		fmt.Printf("starting node %d\n", i)
+		peers := []string{}
+
+		if node != nil {
+			peers = node.Peers()
+		}
+
+		node, cli, err = newEtcd(ctx, peers...)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer node.Stop()
+
+		log.Printf("peers: %v", node.Peers())
+		if put, err := cli.Put(ctx, fmt.Sprintf("peers-%d", i), fmt.Sprintf("%v", node.Peers())); err != nil {
+			log.Fatal(err)
+		} else {
+			log.Printf("put revision %d", put.Header.Revision)
+		}
+	}
+
+	members, err := cli.MemberList(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("node 1 listening on %s", lis1.Addr())
-
-	// WithContext makes tun.URL() block until the tunnel is established and
-	// routable, so the join below dials a tunnel that's actually up.
-	tun1 := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithListener(lis1)
-	log.Printf("node 1 tunnel hostname %s", tun1.Hostname())
-
-	etcd1 := libetcd.From().WithPeerListener(lis1, tun1.URL().String()).WithContext(ctx)
-	if err := etcd1.Join(); err != nil {
-		log.Fatal(err)
+	voters := 0
+	for _, m := range members.Members {
+		if status, err := cli.Status(ctx, m.ClientURLs[0]); err != nil {
+			log.Fatalf("member %d at %v: status error: %v", m.ID, m.ClientURLs, err)
+		} else {
+			log.Printf("member %d at %v is voter: %v", m.ID, m.ClientURLs, !status.IsLearner)
+			if !status.IsLearner {
+				voters++
+			}
+		}
 	}
-	defer etcd1.Stop()
-	log.Printf("node 1 peers: %v", etcd1.Peers())
 
-	put1, err := etcd1.Client().Put(ctx, "hello", "world")
+	allKvs, err := cli.Get(ctx, "", clientv3.WithPrefix())
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("node 1 put revision %d", put1.Header.Revision)
+	for _, kv := range allKvs.Kvs {
+		log.Printf("key %q value %q", kv.Key, kv.Value)
+	}
 
-	// Node 2: same shape, but joins node 1 through its advertised tunnel URL.
-	lis2, err := net.Listen("tcp", "0.0.0.0:0")
+	// Every node joined as a voter and every node's write replicated cluster-wide
+	// over the BYO peer servers fronted by the tunnels: num voting members, num
+	// keys. Anything short of that is a failed run.
+	if voters != num || len(allKvs.Kvs) != num {
+		log.Fatalf("with-tunnel FAILED: %d/%d voters, %d/%d keys", voters, num, len(allKvs.Kvs), num)
+	}
+	log.Printf("with-tunnel success: %d voting members, %d keys replicated across the tunnels", voters, len(allKvs.Kvs))
+}
+
+func newEtcd(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Client, error) {
+	log.Printf("new etcd from peers: %v", peers)
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
-	log.Printf("node 2 listening on %s", lis2.Addr())
 
-	tun2 := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithListener(lis2)
-	log.Printf("node 2 tunnel hostname %s", tun2.Hostname())
+	tunnel := libtunnel.New(libtunnel.Cloudflare()).
+		WithContext(ctx).
+		WithListener(listener)
+	log.Printf("new etcd hostname: %s", tunnel.Hostname())
 
-	// This Join dials node 1's advertised tunnel URL over the network — the slow,
-	// failure-prone step; log what it's reaching for so a stall is diagnosable.
-	log.Printf("node 2 joining via %v", etcd1.Peers())
-	etcd2 := libetcd.From(etcd1.Peers()...).WithPeerListener(lis2, tun2.URL().String()).WithContext(ctx)
-	if err := etcd2.Join(); err != nil {
-		log.Fatal(err)
-	}
-	defer etcd2.Stop()
-	log.Printf("node 2 joined; peers: %v", etcd2.Peers())
+	etcd := libetcd.From(peers...).
+		// WithLog("info", os.Stderr).
+		WithPeerListener(nil, tunnel.URL().String())
 
-	// The write made on node 1 replicated across the tunnels to node 2.
-	resp, err := etcd2.Client().Get(ctx, "hello")
-	if err != nil {
-		log.Fatal(err)
+	if err := etcd.Join(); err != nil {
+		return nil, nil, err
 	}
-	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "world" {
-		log.Fatalf("read on node 2 = %v, want %q", resp.Kvs, "world")
+	log.Printf("new etcd: peers: %v, endpoints: %v", etcd.Peers(), etcd.Endpoints())
+
+	mux := http.NewServeMux()
+	mux.Handle("/hello", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("world"))
+	}))
+	for _, path := range etcd.PeerPaths() {
+		mux.Handle(path, etcd.PeerHandler())
 	}
-	log.Printf("with-tunnel success: node 2 read %q across the tunnels", resp.Kvs[0].Value)
+	go http.Serve(listener, mux)
+
+	return etcd, etcd.Client(), nil
 }
