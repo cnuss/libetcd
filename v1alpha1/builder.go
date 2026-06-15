@@ -142,7 +142,10 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 //     and the join's snapshot seed can't run over an already-booted dir). A
 //     joining node needs no inbound raft during Join — the snapshot seed boots
 //     it caught up and it dials out to promote — so serving after Join is in
-//     time for steady-state replication.
+//     time for steady-state replication. Symmetrically, stop serving (close
+//     your http.Server) before Stop: Stop closes the etcd backend, and a peer
+//     request that lands on the still-mounted PeerHandler afterwards
+//     dereferences the closed backend and panics inside etcd's handler.
 //
 //   - Nil lis + no advertiseURLs: a configuration error, latched — with
 //     nothing to bind and nothing to advertise, a raft member has no peer

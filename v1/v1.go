@@ -161,7 +161,10 @@ type Builder[T any] interface {
 	//     WithClientListener(nil). Mount PeerHandler only after Start/Join
 	//     returns (mounting earlier mints the server prematurely); a joining
 	//     node needs no inbound raft during Join, so serving after Join is in
-	//     time for steady-state replication.
+	//     time for steady-state replication. Stop serving (close your
+	//     http.Server) before Stop — Stop closes the backend, and a peer
+	//     request reaching the still-mounted handler afterwards panics in
+	//     etcd's handler.
 	//   - Nil lis with no advertiseURLs: a configuration error — nothing to
 	//     bind and nothing to advertise leaves a raft member with no peer
 	//     address.

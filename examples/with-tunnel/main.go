@@ -36,6 +36,24 @@ func main() {
 	var err error
 	var num = 3
 
+	// BYO peer serving means we own the peer HTTP servers, so we must also stop
+	// them — before stopping the nodes. node.Stop() closes the etcd backend;
+	// a peer request (another member's /version poll, a tunnel health check)
+	// that lands on our still-serving handler after that dereferences a closed
+	// backend and panics in etcd's handler. Shut the servers first, then stop
+	// the nodes. One deferred teardown, registered before the loop so it runs
+	// last (after all the work below).
+	var nodes []v1.EtcdPeer
+	var servers []*http.Server
+	defer func() {
+		for _, s := range servers {
+			_ = s.Close()
+		}
+		for _, n := range nodes {
+			_ = n.Stop()
+		}
+	}()
+
 	for i := range num {
 		fmt.Printf("starting node %d\n", i)
 		peers := []string{}
@@ -44,11 +62,13 @@ func main() {
 			peers = node.Peers()
 		}
 
-		node, cli, err = newEtcd(ctx, peers...)
+		var srv *http.Server
+		node, cli, srv, err = newEtcd(ctx, peers...)
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer node.Stop()
+		nodes = append(nodes, node)
+		servers = append(servers, srv)
 
 		log.Printf("peers: %v", node.Peers())
 		if put, err := cli.Put(ctx, fmt.Sprintf("peers-%d", i), fmt.Sprintf("%v", node.Peers())); err != nil {
@@ -91,11 +111,11 @@ func main() {
 	log.Printf("with-tunnel success: %d voting members, %d keys replicated across the tunnels", voters, len(allKvs.Kvs))
 }
 
-func newEtcd(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Client, error) {
+func newEtcd(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Client, *http.Server, error) {
 	log.Printf("new etcd from peers: %v", peers)
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	tunnel := libtunnel.New(libtunnel.Cloudflare()).
@@ -108,10 +128,14 @@ func newEtcd(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Clien
 		WithPeerListener(nil, tunnel.URL().String())
 
 	if err := etcd.Join(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	log.Printf("new etcd: peers: %v, endpoints: %v", etcd.Peers(), etcd.Endpoints())
 
+	// BYO peer serving: we own the peer (raft) HTTP server. Mount PeerHandler()
+	// only now, after Join returns — mounting it earlier mints the server before
+	// Join and is rejected. The caller (main) closes this server before stopping
+	// the node; see the teardown note there.
 	mux := http.NewServeMux()
 	mux.Handle("/hello", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("world"))
@@ -119,7 +143,8 @@ func newEtcd(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Clien
 	for _, path := range etcd.PeerPaths() {
 		mux.Handle(path, etcd.PeerHandler())
 	}
-	go http.Serve(listener, mux)
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(listener)
 
-	return etcd, etcd.Client(), nil
+	return etcd, etcd.Client(), srv, nil
 }

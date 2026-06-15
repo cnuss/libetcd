@@ -273,9 +273,11 @@ raft alongside your own routes, or front the peer protocol with a tunnel/proxy
 calling `PeerHandler()` earlier mints the server prematurely. A joining node
 needs no inbound raft during `Join` (the snapshot seed boots it caught up and it
 dials out to promote), so serving right after `Join` returns is in time for
-steady-state replication. `WithPeerListener(nil)` with no advertise URLs is a
-config error — a raft member must serve a socket or advertise where its peer
-protocol is served.
+steady-state replication. Symmetrically, **stop serving (close your
+`http.Server`) before `Stop`** — `Stop` closes the etcd backend, and a peer
+request reaching the still-mounted handler afterwards panics inside etcd's
+handler. `WithPeerListener(nil)` with no advertise URLs is a config error — a
+raft member must serve a socket or advertise where its peer protocol is served.
 
 ## Examples
 
