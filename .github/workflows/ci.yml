@@ -114,6 +114,12 @@ jobs:
           done
 
       - name: e2e
+        # with-tunnel dials real Cloudflare tunnels (slow, network-flaky), so it
+        # runs on just one cell per OS — the stable-Go x64 ubuntu/windows + arm64
+        # mac. LIBETCD_E2E_TUNNEL=1 there un-skips it; every other cell skips it
+        # (see gateTunnel). The rest of the e2e suite runs on every cell.
+        env:
+          LIBETCD_E2E_TUNNEL: ${{ (matrix.go == 'stable' && (matrix.os == 'ubuntu-24.04' || matrix.os == 'windows-2025' || matrix.os == 'macos-26')) && '1' || '0' }}
         run: go test -count=1 -v ./e2e/...
 
   release:
