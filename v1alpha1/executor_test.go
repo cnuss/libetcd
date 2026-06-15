@@ -103,6 +103,79 @@ func TestJoin(t *testing.T) {
 	}
 }
 
+// TestJoinBYOPeerServing joins a node whose peer (raft) HTTP it serves itself —
+// WithPeerListener(nil, advertiseURL) — instead of letting libetcd bind the
+// socket. The documented order matters: PeerHandler() is mounted only AFTER
+// Join returns, so it never mints the server before Join (which the seed path
+// needs to mint and seed itself) and never trips the already-minted guard. The
+// snapshot seed means the joiner needs no inbound raft during Join (it dials
+// out to report progress and promote); inbound is needed only for steady-state
+// replication, which the caller's server then provides.
+func TestJoinBYOPeerServing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	e1 := v1alpha1.New()
+	e1.WithDir(t.TempDir()).WithContext(ctx)
+	if err := e1.Start(); err != nil {
+		t.Fatalf("node1 Start: %v", err)
+	}
+	defer e1.Stop()
+	if _, err := e1.Client().Put(ctx, "k", "v"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// node2 owns its peer HTTP: bind a listener, advertise its address, and
+	// serve PeerHandler() ourselves — only after Join returns.
+	lis2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2 := v1alpha1.From(e1.Peers()...)
+	e2.WithDir(t.TempDir()).WithContext(ctx).
+		WithPeerListener(nil, "http://"+lis2.Addr().String())
+
+	if err := e2.Join(); err != nil {
+		t.Fatalf("node2 Join (BYO peer serving): %v", err)
+	}
+	defer e2.Stop()
+
+	// libetcd bound no peer socket; the advertised address is the caller's.
+	if pl := e2.PeerListener(); pl != nil {
+		t.Errorf("PeerListener() = %v, want nil (BYO peer serving)", pl.Addr())
+	}
+
+	// Now stand up the caller-owned peer server for steady state.
+	mux := http.NewServeMux()
+	for _, p := range e2.PeerPaths() {
+		mux.Handle(p, e2.PeerHandler())
+	}
+	go http.Serve(lis2, mux)
+
+	// A fresh write on node1 must replicate to node2 over the BYO peer server.
+	if _, err := e1.Client().Put(ctx, "k2", "v2"); err != nil {
+		t.Fatalf("post-join Put on node1: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		resp, gerr := e2.Self().Get(ctx, "k2")
+		if gerr == nil && len(resp.Kvs) == 1 && string(resp.Kvs[0].Value) == "v2" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node2 never saw k2 (err=%v resp=%v); BYO inbound replication broken", gerr, resp)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err := e2.Stop(); err != nil {
+		t.Errorf("node2 Stop: %v", err)
+	}
+	if err := e1.Stop(); err != nil {
+		t.Errorf("node1 Stop: %v", err)
+	}
+}
+
 // httpGet fetches http://addr+path on the peer listener and returns the body.
 func httpGet(t *testing.T, addr, path string) string {
 	t.Helper()
@@ -174,16 +247,60 @@ func TestWithPeerListener(t *testing.T) {
 	}
 }
 
-// TestWithPeerListenerNil pins the peer side's no-off rule: a nil peer
-// listener latches a config error (a raft member must advertise a peer URL)
-// and Start surfaces it instead of booting.
+// TestWithPeerListenerNil pins the new failure mode: a nil peer listener with
+// no advertise URLs has nothing to bind and nothing to advertise, so it
+// latches a config error and Start surfaces it instead of booting.
 func TestWithPeerListenerNil(t *testing.T) {
 	e := v1alpha1.New()
 	e.WithDir(t.TempDir()).WithPeerListener(nil)
 	t.Cleanup(func() { _ = e.Stop() })
 
 	err := e.Start()
-	if err == nil || !strings.Contains(err.Error(), "peer listener cannot be nil") {
+	if err == nil || !strings.Contains(err.Error(), "peer listener cannot be nil without advertise URLs") {
+		t.Fatalf("Start = %v, want latched nil-peer-listener config error", err)
+	}
+}
+
+// TestWithPeerListenerBYO: a nil peer listener with advertise URLs is BYO peer
+// serving — libetcd binds and serves nothing on the peer side (PeerListener()
+// is nil), advertises the given URL, and hands PeerHandler() out for the caller
+// to serve. A single member bootstraps fine since it needs no peer traffic to
+// become ready.
+func TestWithPeerListenerBYO(t *testing.T) {
+	const advertised = "http://node.example:2380"
+
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(nil, advertised)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer e.Stop()
+
+	// libetcd bound no peer socket: the caller owns serving.
+	if pl := e.PeerListener(); pl != nil {
+		t.Errorf("PeerListener() = %v, want nil (BYO peer serving)", pl.Addr())
+	}
+	// The member advertises the BYO URL.
+	peers := e.Peers()
+	if len(peers) != 1 || peers[0] != advertised {
+		t.Fatalf("Peers() = %v, want [%q]", peers, advertised)
+	}
+	// PeerHandler() is available for the caller to mount on their own server.
+	if e.PeerHandler() == nil {
+		t.Error("PeerHandler() = nil, want a handler for the caller to serve")
+	}
+}
+
+// TestWithPeerListenerBYOUnparseable: a nil listener whose advertise URLs all
+// fail to parse collapses to the no-advertise case — there's no listener
+// address to fall back to, so it's the same latched config error.
+func TestWithPeerListenerBYOUnparseable(t *testing.T) {
+	e := v1alpha1.New()
+	e.WithDir(t.TempDir()).WithPeerListener(nil, "://nope", "")
+	t.Cleanup(func() { _ = e.Stop() })
+
+	err := e.Start()
+	if err == nil || !strings.Contains(err.Error(), "peer listener cannot be nil without advertise URLs") {
 		t.Fatalf("Start = %v, want latched nil-peer-listener config error", err)
 	}
 }

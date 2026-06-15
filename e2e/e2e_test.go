@@ -69,6 +69,7 @@ func assertExample(t *testing.T, name, want string) {
 }
 
 func TestExamples(t *testing.T) {
+	gateE2E(t)
 	cases := []struct {
 		name string
 		want string
@@ -88,5 +89,18 @@ func TestExamples(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assertExample(t, tc.name, tc.want)
 		})
+	}
+}
+
+// gateE2E skips the whole e2e suite on CI cells not chosen to run it. Each
+// example boots real etcd nodes (with-tunnel also dials real Cloudflare
+// tunnels), so CI runs the suite on just a few variants (the workflow sets
+// LIBETCD_E2E=1 there) rather than all matrix cells; the examples are still
+// built on every cell by a separate CI step. Outside CI (CI unset) the suite
+// always runs, so `make e2e` covers it locally.
+func gateE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("CI") == "true" && os.Getenv("LIBETCD_E2E") != "1" {
+		t.Skip("e2e gated off on this CI cell (runs on a few variants); set LIBETCD_E2E=1 to force")
 	}
 }

@@ -117,15 +117,39 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 //
 //   - Non-nil lis: libetcd serves the peer protocol on lis. The factory hands
 //     it out at materialization.
+//
 //   - advertiseURLs given: those are advertised to the cluster (what other
 //     members dial) while libetcd still serves lis — the proxy/LB/tunnel case
 //     where the advertised address differs from the bound socket. Unparseable
 //     entries are dropped; if none parse, the listener's address is advertised
 //     as a fallback (with a warning).
+//
 //   - advertiseURLs omitted: the peer listen+advertise URLs both derive from
 //     the listener's address (https if TLS-wrapped).
-//   - Nil lis: a configuration error, latched — a raft member must advertise a
-//     peer URL, so the peer side cannot be turned off.
+//
+//   - Nil lis + advertiseURLs given: BYO peer serving. libetcd binds and
+//     serves nothing on the peer side; something else serves PeerHandler()
+//     (over PeerPaths()) at the advertised URLs — a custom mux, a
+//     shared/already-running server, a transport libetcd doesn't manage —
+//     which is what the cluster dials. PeerListener() returns nil. libetcd
+//     still drives raft membership and promotion; the caller owns the peer
+//     HTTP server. The peer side can't go fully dark (raft must be reachable),
+//     so nil means delegate serving, not turn off — unlike
+//     WithClientListener(nil).
+//
+//     Mount PeerHandler() only after Start/Join returns: it mints the server,
+//     so calling it earlier mints prematurely (Join then rejects the handle,
+//     and the join's snapshot seed can't run over an already-booted dir). A
+//     joining node needs no inbound raft during Join — the snapshot seed boots
+//     it caught up and it dials out to promote — so serving after Join is in
+//     time for steady-state replication. Symmetrically, stop serving (close
+//     your http.Server) before Stop: Stop closes the etcd backend, and a peer
+//     request that lands on the still-mounted PeerHandler afterwards
+//     dereferences the closed backend and panics inside etcd's handler.
+//
+//   - Nil lis + no advertiseURLs: a configuration error, latched — with
+//     nothing to bind and nothing to advertise, a raft member has no peer
+//     address at all.
 //
 // Last call wins, but only until the listener has been materialized (the first
 // PeerListener() call, typically inside Start/Join): after that a changed
@@ -135,13 +159,34 @@ func (b *EtcdImpl) WithPeerListener(lis net.Listener, advertiseURLs ...string) v
 		if b.peerListenerMaterialized.Load() {
 			return fmt.Errorf("peer listener already materialized; configure before Start/Join")
 		}
-		if lis == nil {
-			return fmt.Errorf("peer listener cannot be nil: a raft member must advertise a peer URL")
-		}
-		b.peerListenerFactory = func() (net.Listener, error) { return lis, nil }
 		// b.cfg.GetLogger() (not b.Logger(), which would re-lock b.mu while
 		// mutate already holds it) — parse runs under the lock.
-		b.peerAdvertise = parseAdvertiseURLs(advertiseURLs, b.cfg.GetLogger())
+		adv := parseAdvertiseURLs(advertiseURLs, b.cfg.GetLogger())
+		if lis == nil {
+			// BYO peer serving: libetcd binds and serves nothing on the peer
+			// side; something else serves PeerHandler() at the advertised URLs,
+			// which is what the cluster dials. Clear the factories ("do
+			// nothing", as WithClientListener(nil) does) and set the peer URLs
+			// directly from the advertise override, since there's no listener
+			// to derive them from. With no advertise URLs there's nothing to
+			// bind and nothing to advertise — a raft member must do one.
+			if len(adv) == 0 {
+				return fmt.Errorf("peer listener cannot be nil without advertise URLs: a raft member must serve a peer socket or advertise where its peer protocol is served")
+			}
+			b.peerListenerFactory = nil
+			b.peerHTTPFactory = nil
+			b.peerAdvertise = adv
+			b.cfg.AdvertisePeerUrls = adv
+			// ListenPeerUrls is the bind set; etcd's checkBindURLs rejects a
+			// hostname there (only IP/localhost), and the advertise URLs are
+			// typically hostnames. libetcd binds nothing in BYO mode (the
+			// caller serves PeerHandler), so this is inert metadata that just
+			// has to pass validation — hardcode a loopback placeholder.
+			b.cfg.ListenPeerUrls = []url.URL{{Scheme: "http", Host: "127.0.0.1:2380"}}
+			return nil
+		}
+		b.peerListenerFactory = func() (net.Listener, error) { return lis, nil }
+		b.peerAdvertise = adv
 		b.applyPeerURLs(lis)
 		return nil
 	})

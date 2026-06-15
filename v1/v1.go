@@ -48,7 +48,8 @@ type Server interface {
 	ClientListener() net.Listener
 	// PeerListener returns the materialized peer listener — the one passed to
 	// WithPeerListener, or the auto-bound default — or nil before Start/Join
-	// binds it.
+	// binds it, or when the peer side is BYO-served
+	// (WithPeerListener(nil, advertiseURLs...)) and libetcd binds nothing.
 	PeerListener() net.Listener
 }
 
@@ -149,8 +150,24 @@ type Builder[T any] interface {
 	//   - advertiseURLs omitted: the peer listen+advertise URLs both derive
 	//     from the listener's address (https if TLS-wrapped). Pass a listener
 	//     bound to :0 to claim a free port.
-	//   - Nil lis: a configuration error — a raft member must advertise a peer
-	//     URL, so the peer side cannot be turned off.
+	//   - Nil lis with advertiseURLs: BYO peer serving — libetcd binds and
+	//     serves nothing on the peer side; something else serves PeerHandler()
+	//     (over PeerPaths()) at the advertised URLs (a custom mux, a shared
+	//     server, a transport libetcd doesn't manage), which is what the
+	//     cluster dials. PeerListener returns nil. libetcd still drives raft
+	//     membership and promotion; the caller owns the peer HTTP server. The
+	//     peer side can't go fully dark (raft must be reachable), so nil
+	//     delegates serving rather than turning it off — unlike
+	//     WithClientListener(nil). Mount PeerHandler only after Start/Join
+	//     returns (mounting earlier mints the server prematurely); a joining
+	//     node needs no inbound raft during Join, so serving after Join is in
+	//     time for steady-state replication. Stop serving (close your
+	//     http.Server) before Stop — Stop closes the backend, and a peer
+	//     request reaching the still-mounted handler afterwards panics in
+	//     etcd's handler.
+	//   - Nil lis with no advertiseURLs: a configuration error — nothing to
+	//     bind and nothing to advertise leaves a raft member with no peer
+	//     address.
 	//
 	// Last call wins. Replaces WithPeerServing.
 	WithPeerListener(lis net.Listener, advertiseURLs ...string) T
