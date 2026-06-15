@@ -114,12 +114,14 @@ jobs:
           done
 
       - name: e2e
-        # with-tunnel dials real Cloudflare tunnels (slow, network-flaky), so it
-        # runs on just one cell per OS — the stable-Go x64 ubuntu/windows + arm64
-        # mac. LIBETCD_E2E_TUNNEL=1 there un-skips it; every other cell skips it
-        # (see gateTunnel). The rest of the e2e suite runs on every cell.
+        # The e2e suite boots real etcd nodes (with-tunnel also dials real
+        # Cloudflare tunnels — slow, network-flaky), so it runs on just a few
+        # variants — the stable-Go ubuntu-24.04, windows-2025, and macos-26 (one
+        # per OS). LIBETCD_E2E=1 un-skips it there; every other cell skips the
+        # whole suite (see gateE2E). Examples are still *built* on every cell by
+        # the step above.
         env:
-          LIBETCD_E2E_TUNNEL: ${{ (matrix.go == 'stable' && (matrix.os == 'ubuntu-24.04' || matrix.os == 'windows-2025' || matrix.os == 'macos-26')) && '1' || '0' }}
+          LIBETCD_E2E: ${{ (matrix.go == 'stable' && (matrix.os == 'ubuntu-24.04' || matrix.os == 'windows-2025' || matrix.os == 'macos-26')) && '1' || '0' }}
         run: go test -count=1 -v ./e2e/...
 
   release:

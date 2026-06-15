@@ -69,6 +69,7 @@ func assertExample(t *testing.T, name, want string) {
 }
 
 func TestExamples(t *testing.T) {
+	gateE2E(t)
 	cases := []struct {
 		name string
 		want string
@@ -86,21 +87,20 @@ func TestExamples(t *testing.T) {
 	// ports, and concurrent runs contend for ports and CPU.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.name == "with-tunnel" {
-				gateTunnel(t)
-			}
 			assertExample(t, tc.name, tc.want)
 		})
 	}
 }
 
-// gateTunnel skips the with-tunnel example on CI cells not chosen to run it.
-// Unlike the others it dials real Cloudflare tunnels — slow and network-flaky —
-// so CI runs it on just one cell per OS (the workflow sets LIBETCD_E2E_TUNNEL=1
-// there). Outside CI (CI unset) it always runs, so `make e2e` covers it locally.
-func gateTunnel(t *testing.T) {
+// gateE2E skips the whole e2e suite on CI cells not chosen to run it. Each
+// example boots real etcd nodes (with-tunnel also dials real Cloudflare
+// tunnels), so CI runs the suite on just a few variants (the workflow sets
+// LIBETCD_E2E=1 there) rather than all matrix cells; the examples are still
+// built on every cell by a separate CI step. Outside CI (CI unset) the suite
+// always runs, so `make e2e` covers it locally.
+func gateE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("CI") == "true" && os.Getenv("LIBETCD_E2E_TUNNEL") != "1" {
-		t.Skip("with-tunnel gated off on this CI cell (runs on one OS each); set LIBETCD_E2E_TUNNEL=1 to force")
+	if os.Getenv("CI") == "true" && os.Getenv("LIBETCD_E2E") != "1" {
+		t.Skip("e2e gated off on this CI cell (runs on a few variants); set LIBETCD_E2E=1 to force")
 	}
 }
