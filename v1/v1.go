@@ -186,12 +186,18 @@ type Etcd interface {
 
 // EtcdPeer is the surface returned by From: a node that joins an existing
 // cluster (when From was given peer URLs) or bootstraps a fresh one (when it
-// wasn't). It exposes the Client accessors and the Builder setters (which chain
-// back to EtcdPeer), but not Start or the server handles — the lifecycle
-// entries are Join and Stop, and a node needing the full Etcd surface
-// (Server/GrpcServer/handlers) is built with New instead.
+// wasn't). It exposes the Client accessors, the Server handles, and the Builder
+// setters (which chain back to EtcdPeer); the lifecycle entries are Join and
+// Stop, not Start (Join handles both joining and bootstrap).
+//
+// The Server handles (Server/GrpcServer/ClientHandler/PeerHandler/…) are for use
+// after Join has started the node — reading the running server, registering
+// extra gRPC services, inspecting listeners. Calling them before Join mints the
+// server prematurely from the bootstrap config, which Join then rejects ("server
+// already minted"); build a fresh From handle in that case.
 type EtcdPeer interface {
 	Client
+	Server
 	Builder[EtcdPeer]
 
 	// Join brings the node into the cluster at the configured peer URLs, over

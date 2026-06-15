@@ -236,14 +236,18 @@ type Client interface {
 }
 ```
 
-`EtcdPeer` (from `From`) is a join-only node: the `Client` accessors and `Builder`
-setters (chaining back to `EtcdPeer`), plus `Join`/`Stop` — but no `Start`.
-`From(...).Join()` is the only way to join an existing cluster.
+`EtcdPeer` (from `From`) is a join-only node: the `Client` accessors, the
+`Server` handles, and the `Builder` setters (chaining back to `EtcdPeer`), plus
+`Join`/`Stop` — but no `Start`. `From(...).Join()` is the only way to join an
+existing cluster. The `Server` handles are for use after `Join` has started the
+node; calling them before `Join` mints the server prematurely from the bootstrap
+config, which `Join` then rejects ("server already minted").
 
 ```go
 // EtcdPeer — join an existing cluster from a list of peer URLs.
 type EtcdPeer interface {
-    Client            // Self / Leader / Client / Peers
+    Client            // Self / Leader / Client / Peers / Endpoints
+    Server            // Server / GrpcServer / ClientHandler / PeerHandler / listeners
     Builder[EtcdPeer] // same setters as Etcd, chaining back to EtcdPeer
     Join() error      // join over the peer listener: POST /libetcd/v1/join, restore the
                       // streamed snapshot, start, promote to voting; token-authorized,
