@@ -56,7 +56,10 @@ func New() Etcd {
 //
 // Peers are plain strings — bare host:port, http://, or https:// entries are
 // accepted; at Join time the library trims them, defaults a missing scheme to
-// http, de-duplicates, and silently drops any it can't parse.
+// http, de-duplicates, and silently drops any it can't parse. From also unions
+// in the LIBETCD_PEERS environment variable — a comma-separated list or a JSON
+// array of strings — so a node can be aimed at a cluster by environment alone;
+// with no peers from either source, From()...Join() bootstraps.
 //
 // Join runs entirely over the cluster's peer (raft) listener: the node POSTs
 // itself to a peer's /libetcd/v1/join endpoint, restores the snapshot the peer

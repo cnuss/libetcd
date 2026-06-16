@@ -112,6 +112,12 @@ func main() {
 fresh single-member start (exactly `New().Start()`), so a first node and the
 nodes that join it can share one `From(...).Join()` call site.
 
+Peers can also come from the `LIBETCD_PEERS` environment variable — a
+comma-separated list or a JSON array of strings — which `Join` unions with the
+arguments to `From` (either alone works; together they combine). So a node can
+be aimed at a cluster purely by environment, with no code change. With no peers
+from either source, `From()...Join()` still bootstraps.
+
 Joins are safe to run concurrently — `Join` serializes membership changes
 through a lock held in the target cluster, so several nodes (even in separate
 processes) can call it at once. The lock writes transient coordination keys
