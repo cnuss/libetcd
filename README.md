@@ -292,7 +292,7 @@ Self-contained programs in [`./examples`](./examples):
 | `dir-handoff` | Stop a node, then boot a brand-new builder over the same data dir (process-restart semantics); verify every key survived. |
 | `restart-cycle` | Stop every member of a cluster, recreate them all with fresh builders over the same dirs + addresses, verify zero loss — twice. |
 | `headless-leader` | Bootstrap a node serving no client traffic (`WithClientListener(nil)`); join two nodes to it over the peer transport; verify replication and that one member is headless. |
-| `with-tunnel` | A three-node cluster across NAT via [libtunnel](https://github.com/cnuss/libtunnel): BYO peer serving (`WithPeerListener(nil, tunnelURL)`) — each node serves libetcd's `PeerHandler()` on its own listener (fronted by a public Cloudflare tunnel) after `Join()` returns; `From()`/`Join()` bootstrap then join, and every node's write replicates across the tunnels (asserts 3 voters, 3 keys). |
+| `with-tunnel` | The single-node example, reachable across NAT via [libtunnel](https://github.com/cnuss/libtunnel): BYO peer serving (`WithPeerListener(nil, tunnelURL)`) — the node serves libetcd's `PeerHandler()` on its own listener fronted by a public Cloudflare tunnel and advertises that URL. (The multi-node version lives as `TestMultiNodeTunnel` in `e2e`.) |
 
 Run one locally:
 

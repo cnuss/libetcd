@@ -38,11 +38,13 @@ windows:
 test:
 	go test ./...
 
-# End-to-end: the harness builds and drives every example binary. -count=1 disables
-# go test caching, since the harness builds the example binaries at runtime and the
-# cache key wouldn't otherwise pick up example source changes.
+# End-to-end: the harness builds and drives every example binary, plus the
+# in-process TestMultiNodeTunnel. -count=1 disables go test caching, since the
+# harness builds the example binaries at runtime and the cache key wouldn't
+# otherwise pick up example source changes. e2e is its own module (it imports
+# libtunnel, which the library module must not), so run it from its own dir.
 e2e:
-	go test -count=1 -v ./e2e
+	cd e2e && go test -count=1 -v ./...
 
 # Run an example by name, forwarding any trailing words as args:
 #   make run single-node
