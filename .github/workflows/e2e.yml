@@ -1,0 +1,30 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tunnel: [1, 2, 3]
+    steps:
+      - name: Generate Tunnel Spec
+        id: tunnel-spec
+        uses: cnuss/actions-run-once@v1
+        with:
+          key: tunnel-${{ matrix.tunnel }}-run-${{ github.run_id }}-${{ github.run_attempt }}
+          run: curl -XPOST https://api.trycloudflare.com/tunnel 2>/dev/null | jq -r '.result'
