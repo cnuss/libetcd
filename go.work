@@ -6,6 +6,7 @@ go 1.26
 // with GOWORK=off to prove that standalone resolution.
 use (
 	.
+	./e2e
 	./examples/async-join
 	./examples/dir-handoff
 	./examples/headless-leader
