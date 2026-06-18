@@ -8,6 +8,54 @@ import (
 	"time"
 )
 
+// TestEnvPeers covers parsing the LIBETCD_PEERS value: empty, CSV, JSON array,
+// malformed JSON falling back to CSV, and whitespace/empty-entry trimming. The
+// result is not otherwise normalized — sanitizePeers does that in Join.
+func TestEnvPeers(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "   ", nil},
+		{"single", "a:2380", []string{"a:2380"}},
+		{"csv", "a:2380,https://b:2380,c:2380", []string{"a:2380", "https://b:2380", "c:2380"}},
+		{"csv trims + drops empties", " a:2380 , ,b:2380,", []string{"a:2380", "b:2380"}},
+		{"json array", `["a:2380","https://b:2380"]`, []string{"a:2380", "https://b:2380"}},
+		{"json array trims + drops empties", `[" a:2380 ","",  "b:2380"]`, []string{"a:2380", "b:2380"}},
+		{"malformed json falls back to csv", "[a:2380,b:2380", []string{"[a:2380", "b:2380"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envPeers(tc.in); !slices.Equal(got, tc.want) {
+				t.Fatalf("envPeers(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJoinFoldsEnvPeers: Join unions LIBETCD_PEERS into its targets, so From()
+// with no arguments but the env set is a join, not a bootstrap. The env peer is
+// non-loopback while the auto-bound advertise URL is loopback, so Join fails
+// fast with the loopback-mismatch error — proving the env peer drove a join
+// (a bootstrap would have returned nil) and reached the reachability check.
+func TestJoinFoldsEnvPeers(t *testing.T) {
+	t.Setenv(PeersEnv, "10.255.255.1:2380")
+	p := From() // no arguments; the peer comes from LIBETCD_PEERS
+	p.WithDir(t.TempDir())
+	t.Cleanup(func() { _ = p.Stop() })
+
+	start := time.Now()
+	err := p.Join()
+	if err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("Join = %v, want loopback-mismatch (env peer folded into a join, not a bootstrap)", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("Join took %v, want fail-fast", elapsed)
+	}
+}
+
 // TestSanitizePeers covers the normalization From applies to a caller's peer
 // URLs: trim, drop-empty, default-scheme, dedup, the preserved first-seen
 // order, and the reporting of dropped unparseable entries (empties and dups

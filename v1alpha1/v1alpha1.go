@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -181,6 +182,15 @@ func newImpl() *EtcdImpl {
 // From returns a join-only builder for a node that will join the cluster
 // reachable at the given peer URLs. Configure it with the With* methods, then
 // call Join; see peerJoiner.
+//
+// The arguments are unioned with the LIBETCD_PEERS environment variable
+// (PeersEnv) — a comma-separated list or a JSON array of strings — so a node can
+// be aimed at a cluster by environment alone. Join normalizes and de-duplicates
+// the result; with no peers from either source, From()...Join() bootstraps.
 func From(peers ...string) v1.EtcdPeer {
+	// Union the arguments with the env peers before Join sees them. Copy first
+	// so we never append into the caller's backing array (From(slice...) aliases
+	// it). Raw strings — Join's sanitizePeers trims, default-schemes, and dedups.
+	peers = append(append([]string(nil), peers...), envPeers(os.Getenv(PeersEnv))...)
 	return &peerJoiner{EtcdImpl: newImpl(), peers: peers}
 }

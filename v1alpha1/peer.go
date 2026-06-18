@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -100,11 +101,13 @@ const defaultJoinTimeout = 90 * time.Second
 // member or the bounding context elapses (defaultJoinTimeout if WithContext set
 // no deadline).
 //
-// With no peer URLs (From() called with no arguments), there is nothing to
-// join: Join bootstraps a fresh single-member cluster, behaving exactly like
-// New().Start(). It short-circuits to Start before any of the join machinery
-// below, so none of the join-failure semantics (rollback, single-use handle)
-// apply to a bootstrap.
+// The peer URLs come from From's arguments unioned with the LIBETCD_PEERS
+// environment variable (PeersEnv) — a comma-separated list or a JSON array of
+// strings — so a node can be aimed at a cluster by environment alone. With no
+// peer URLs from either source, there is nothing to join: Join bootstraps a
+// fresh single-member cluster, behaving exactly like New().Start(). It
+// short-circuits to Start before any of the join machinery below, so none of
+// the join-failure semantics (rollback, single-use handle) apply to a bootstrap.
 //
 // On failure after the member-add, Join rolls back: it removes the half-joined
 // member from the cluster, then stops the local server if it started — in that
@@ -120,12 +123,13 @@ const defaultJoinTimeout = 90 * time.Second
 // handle (the embedded server is single-use): further Join calls fail
 // immediately, and another attempt needs a fresh From(...) handle.
 func (p *peerJoiner) Join() (err error) {
-	// No peers given (From() with no arguments) is a bootstrap, not a join:
-	// there is nothing to join, so start a fresh single-member cluster. Checked
-	// on the raw argument count — From("typo") that sanitizes to zero peers is
-	// a bad-input error below, not a silent bootstrap. Short-circuit to Start
-	// before any join machinery (single-flight latch, member-add, rollback);
-	// Start has its own once-guard, so a second call is the usual no-op.
+	// No peers (From given no arguments and no LIBETCD_PEERS — the env is unioned
+	// into p.peers in From) is a bootstrap, not a join: there is nothing to join,
+	// so start a fresh single-member cluster. Checked on the raw count —
+	// From("typo") that sanitizes to zero peers is a bad-input error below, not a
+	// silent bootstrap. Short-circuit to Start before any join machinery
+	// (single-flight latch, member-add, rollback); Start has its own once-guard,
+	// so a second call is the usual no-op.
 	if len(p.peers) == 0 {
 		return p.Start()
 	}
@@ -594,6 +598,32 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// PeersEnv is the environment variable Join unions into its peer list, on top of
+// From's arguments: a comma-separated list or a JSON array of strings.
+const PeersEnv = "LIBETCD_PEERS"
+
+// envPeers parses a LIBETCD_PEERS value into peer entries. A value that parses as
+// a JSON array of strings is used as such; otherwise it's split on commas. Each
+// entry is trimmed and empties dropped; the rest is left for sanitizePeers to
+// normalize at Join. Returns nil for an empty/whitespace value.
+func envPeers(v string) []string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(v), &entries); err != nil {
+		entries = strings.Split(v, ",")
+	}
+	out := make([]string, 0, len(entries))
+	for _, s := range entries {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sanitizePeers normalizes the caller-supplied list of peer (raft) URLs into a
