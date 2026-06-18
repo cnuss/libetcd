@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,7 +30,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	leader := libetcd.New().WithContext(ctx)
+	// Diagnostic etcd logging (member-add timeout flake under load): tagged by
+	// member name to stderr so a CI failure shows the raft/reconfig state.
+	leader := libetcd.New().WithName("leader").WithContext(ctx).WithLog("info", os.Stderr)
 	if err := leader.Start(); err != nil {
 		log.Fatal(err)
 	}
@@ -86,7 +89,10 @@ func main() {
 		go func(i int) {
 			defer wgJoiners.Done()
 
-			peerNode := libetcd.From(leader.Peers()...).WithContext(ctx)
+			peerNode := libetcd.From(leader.Peers()...).
+				WithName(fmt.Sprintf("joiner-%d", i)).
+				WithContext(ctx).
+				WithLog("info", os.Stderr)
 			if err := peerNode.Join(); err != nil {
 				joinErrs <- fmt.Errorf("join %d: %w", i, err)
 				return

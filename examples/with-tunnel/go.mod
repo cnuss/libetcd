@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/cnuss/libetcd v0.0.0
-	github.com/cnuss/libtunnel v0.0.16
+	github.com/cnuss/libtunnel v0.0.19
 )
 
 require (
