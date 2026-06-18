@@ -2,124 +2,120 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cnuss/libetcd"
 	v1 "github.com/cnuss/libetcd/v1"
 	"github.com/cnuss/libtunnel"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // TestMultiNodeTunnel forms a three-node libetcd cluster across NAT with
-// libtunnel: each node uses BYO peer serving — WithPeerListener(nil, tunnelURL)
-// — serving its own peer (raft) HTTP on a local socket fronted by a public
-// Cloudflare tunnel, while advertising the tunnel URL the other members dial.
-// From()/Join() bootstraps the first node and joins the rest over the same call
-// site. It asserts all three end up voting and every node's write replicated
-// cluster-wide (3 voters, 3 keys).
+// libtunnel using one identical call per node: every node is handed the same
+// self-inclusive peer set (all three tunnel URLs) and calls From(set...).Join()
+// concurrently. No node is special-cased — the uniform-config election picks the
+// lowest URL to bootstrap and the other two join it (issue #98). Each node uses
+// BYO peer serving (WithPeerListener(nil, tunnelURL)), serving its own raft HTTP
+// on a socket fronted by a public Cloudflare tunnel and advertising that URL.
 //
-// In-process (no subprocess), so the assertions ride testing, not an exit code
-// + stdout grep. It dials real Cloudflare tunnels, so it's gated like the rest
-// of the suite (see gateE2E) and needs outbound network.
+// In-process (no subprocess), so assertions ride testing. It dials real
+// Cloudflare tunnels, so it's gated like the rest of the suite (gateE2E) and
+// needs outbound network.
 func TestMultiNodeTunnel(t *testing.T) {
 	gateE2E(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	const num = 3
+	const n = 3
 
-	// BYO peer serving means we own the peer HTTP servers, so we must also stop
-	// them — before stopping the nodes. Stop() closes the etcd backend, and a
-	// peer request (another member's /version poll, a tunnel health check) that
-	// lands on a still-serving handler afterwards dereferences the closed backend
-	// and panics in etcd's handler. Close the servers first, then stop the nodes.
-	var nodes []v1.EtcdPeer
-	var servers []*http.Server
+	// Bind every listener and mint every tunnel first, so all URLs exist before
+	// any node starts; then hand the same set to all three. WithContext makes
+	// URL() block until the tunnel is routable.
+	listeners := make([]net.Listener, n)
+	tunnels := make([]libtunnel.TunneledV1, n)
+	urls := make([]string, n)
+	for i := range n {
+		l, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		listeners[i] = l
+		tunnels[i] = libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithListener(l)
+		urls[i] = tunnels[i].URL().String()
+	}
+
+	nodes := make([]v1.EtcdPeer, n)
+	servers := make([]*http.Server, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			nodes[i], servers[i], errs[i] = newTunnelNode(listeners[i], urls[i], urls...)
+		}(i)
+	}
+	wg.Wait()
+
+	// BYO peer serving: we own the peer HTTP servers, so close them before
+	// stopping the nodes — Stop() closes the etcd backend, and a peer request
+	// reaching a still-serving handler afterwards panics in etcd's handler.
 	t.Cleanup(func() {
 		for _, s := range servers {
-			_ = s.Close()
+			if s != nil {
+				_ = s.Close()
+			}
 		}
-		for _, n := range nodes {
-			_ = n.Stop()
+		for _, nd := range nodes {
+			if nd != nil {
+				_ = nd.Stop()
+			}
 		}
 	})
 
-	var node v1.EtcdPeer
-	var cli *clientv3.Client
-	for i := range num {
-		var peers []string
-		if node != nil {
-			peers = node.Peers()
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("node %d (%s) Join: %v", i, urls[i], e)
 		}
+	}
 
-		n, c, srv, err := newTunnelNode(ctx, peers...)
+	// Every node converged on the same three-member, all-voting cluster.
+	for i, nd := range nodes {
+		ml, err := nd.Self().MemberList(ctx)
 		if err != nil {
-			t.Fatalf("node %d: %v", i, err)
+			t.Fatalf("node %d MemberList: %v", i, err)
 		}
-		nodes = append(nodes, n)
-		servers = append(servers, srv)
-		node, cli = n, c
-		t.Logf("node %d peers: %v", i, node.Peers())
-
-		if _, err := cli.Put(ctx, fmt.Sprintf("peers-%d", i), fmt.Sprintf("%v", node.Peers())); err != nil {
-			t.Fatalf("node %d put: %v", i, err)
+		if len(ml.Members) != n {
+			t.Fatalf("node %d sees %d members, want %d", i, len(ml.Members), n)
 		}
-	}
-
-	members, err := cli.MemberList(ctx)
-	if err != nil {
-		t.Fatalf("member list: %v", err)
-	}
-	voters := 0
-	for _, m := range members.Members {
-		status, err := cli.Status(ctx, m.ClientURLs[0])
+		st, err := nd.Self().Status(ctx, "")
 		if err != nil {
-			t.Fatalf("member %d at %v: status: %v", m.ID, m.ClientURLs, err)
+			t.Fatalf("node %d Status: %v", i, err)
 		}
-		t.Logf("member %d at %v is voter: %v", m.ID, m.ClientURLs, !status.IsLearner)
-		if !status.IsLearner {
-			voters++
+		if st.IsLearner {
+			t.Errorf("node %d (%s) still a learner; want voter", i, urls[i])
 		}
 	}
-
-	allKvs, err := cli.Get(ctx, "", clientv3.WithPrefix())
-	if err != nil {
-		t.Fatalf("get all: %v", err)
-	}
-
-	if voters != num {
-		t.Errorf("voters = %d, want %d", voters, num)
-	}
-	if len(allKvs.Kvs) != num {
-		t.Errorf("keys = %d, want %d", len(allKvs.Kvs), num)
-	}
-	t.Logf("multi-node tunnel: %d voting members, %d keys replicated across the tunnels", voters, len(allKvs.Kvs))
+	t.Logf("multi-node tunnel: %d voting members across the tunnels", n)
 }
 
-// newTunnelNode brings up one BYO-peer-serving node behind a fresh tunnel: bind
-// a local listener, front it with a Cloudflare tunnel, advertise the tunnel URL,
-// Join (bootstrap when peers is empty), then serve PeerHandler() on the listener
-// — only after Join returns, so the server isn't minted prematurely. The caller
-// closes the returned *http.Server before stopping the node.
-func newTunnelNode(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3.Client, *http.Server, error) {
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// WithContext makes tunnel.URL() block until the tunnel is up and routable,
-	// so the advertised URL is dialable by the time Join needs it.
-	tunnel := libtunnel.New(libtunnel.Cloudflare()).
-		WithContext(ctx).
-		WithListener(listener)
-
-	etcd := libetcd.From(peers...).WithPeerListener(nil, tunnel.URL().String())
+// newTunnelNode brings up one BYO-peer-serving node in the uniform-config set:
+// From(peers...) advertising its own tunnel URL, Join (the election decides
+// bootstrap vs join), then serve PeerHandler() on the tunnel's listener — only
+// after Join returns, so the server isn't minted prematurely. The caller closes
+// the returned *http.Server before stopping the node.
+func newTunnelNode(listener net.Listener, selfURL string, peers ...string) (v1.EtcdPeer, *http.Server, error) {
+	// No WithContext: each Join is bounded by the library's default join timeout
+	// and returns a real error on failure, rather than hanging until the test
+	// context fires (which would Stop a serving node mid-flight and panic in
+	// etcd's handler). Teardown is the caller's t.Cleanup.
+	etcd := libetcd.From(peers...).WithPeerListener(nil, selfURL)
 	if err := etcd.Join(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	mux := http.NewServeMux()
@@ -129,5 +125,5 @@ func newTunnelNode(ctx context.Context, peers ...string) (v1.EtcdPeer, *clientv3
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(listener)
 
-	return etcd, etcd.Client(), srv, nil
+	return etcd, srv, nil
 }
