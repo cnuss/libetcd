@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -109,6 +110,20 @@ const defaultJoinTimeout = 90 * time.Second
 // short-circuits to Start before any of the join machinery below, so none of
 // the join-failure semantics (rollback, single-use handle) apply to a bootstrap.
 //
+// Uniform-config bring-up: when this node's own advertised peer URL is one of
+// the peer URLs — every node handed the same self-inclusive set — Join elects a
+// single bootstrapper with no coordination: the node whose canonical URL sorts
+// first bootstraps, the rest join it. So an entire cluster can start from one
+// identical From(set...).Join() (or one LIBETCD_PEERS), no node special-cased.
+// It's split-brain-safe (exactly one node is the canonical minimum) but the
+// bootstrapper must come up for the others to join; bring the nodes up
+// concurrently. Self-detection needs an advertised URL known before Join, i.e.
+// an explicit WithPeerListener — an auto-bound loopback URL won't match.
+//
+// Restart takes precedence over both: if the data dir already holds a member's
+// WAL, Join boots from it (New().Start() over the dir) rather than joining or
+// bootstrapping, so the same call is safe to re-run when a node restarts.
+//
 // On failure after the member-add, Join rolls back: it removes the half-joined
 // member from the cluster, then stops the local server if it started — in that
 // order, because after a promote this node is a voter and stopping it first
@@ -123,6 +138,21 @@ const defaultJoinTimeout = 90 * time.Second
 // handle (the embedded server is single-use): further Join calls fail
 // immediately, and another attempt needs a fresh From(...) handle.
 func (p *peerJoiner) Join() (err error) {
+	// Restart: a data dir that already holds a member's WAL boots from it — not a
+	// join, not a bootstrap. Boot from the WAL like New().Start() over the dir, so
+	// the same From(...).Join() call is safe to re-run on a restart (a joiner
+	// would otherwise try to re-add a member the cluster already has). Gated on
+	// the server not yet being minted: a premature mint (a client accessor called
+	// before Join) also writes a WAL, but that's misuse for the join path — let
+	// the already-minted guard below catch it rather than mistaking it for a
+	// restart.
+	p.mu.Lock()
+	alreadyMinted := p.srv != nil
+	p.mu.Unlock()
+	if !alreadyMinted && p.hasMemberData() {
+		return p.Start()
+	}
+
 	// No peers (From given no arguments and no LIBETCD_PEERS — the env is unioned
 	// into p.peers in From) is a bootstrap, not a join: there is nothing to join,
 	// so start a fresh single-member cluster. Checked on the raw count —
@@ -131,6 +161,19 @@ func (p *peerJoiner) Join() (err error) {
 	// (single-flight latch, member-add, rollback); Start has its own once-guard,
 	// so a second call is the usual no-op.
 	if len(p.peers) == 0 {
+		return p.Start()
+	}
+
+	// Uniform-config bring-up: when this node's own advertised peer URL is in the
+	// peer set, the set is self-inclusive (every node was handed the same list).
+	// The node whose canonical URL sorts first bootstraps; the rest join it —
+	// decided locally with no coordination, and split-brain-safe (exactly one
+	// node is the minimum). raceActive is carried down to drop self from the dial
+	// set when joining. A node whose advertise URL isn't known yet (auto-bound,
+	// not materialized) won't match and falls through to an ordinary join.
+	selfURLs := p.selfPeerURLs()
+	bootstrap, raceActive := bootstrapRole(p.peers, selfURLs)
+	if raceActive && bootstrap {
 		return p.Start()
 	}
 	if p.exhausted.Load() {
@@ -206,12 +249,27 @@ func (p *peerJoiner) Join() (err error) {
 		defer cancel()
 	}
 
-	peers, droppedPeers := sanitizePeers(p.peers)
+	// In a self-inclusive set this node is a joiner (the bootstrapper short-
+	// circuited to Start above), so drop our own URL — we dial the others, not
+	// ourselves — and dial them canonical-lowest first, so the bootstrapper (the
+	// minimum, the one node guaranteed to serve) is tried before any peer that is
+	// itself still joining. Without that ordering a joiner can POST its member-add
+	// to a not-yet-serving peer whose socket is up but unanswered (a tunnel or
+	// proxy accepts the connection), hanging the whole join budget before it ever
+	// reaches the bootstrapper.
+	dialSet := p.peers
+	if raceActive {
+		dialSet = removeSelf(p.peers, selfURLs)
+		slices.SortFunc(dialSet, func(a, b string) int {
+			return strings.Compare(canonicalPeerURL(a), canonicalPeerURL(b))
+		})
+	}
+	peers, droppedPeers := sanitizePeers(dialSet)
 	if len(droppedPeers) > 0 {
 		logger.Warn("join: ignoring unparseable peer URLs", zap.Strings("dropped", droppedPeers))
 	}
 	if len(peers) == 0 {
-		return fmt.Errorf("no valid peer URLs: %v", p.peers)
+		return fmt.Errorf("no valid peer URLs: %v", dialSet)
 	}
 
 	// A loopback advertise URL is unreachable from any other machine. When the
@@ -661,4 +719,118 @@ func sanitizePeers(peers []string) (out, dropped []string) {
 		out = append(out, norm)
 	}
 	return out, dropped
+}
+
+// canonicalPeerURL reduces a peer URL to a stable key for membership comparison:
+// a missing scheme defaults to http, the host is lowercased, the scheme's
+// default port (https→443, http→80) is filled when absent, and any path/query is
+// dropped. It's stronger than sanitizePeers (which leaves the port as-is), so a
+// node's advertised URL and the same host written either way in the peer set
+// collapse to one key. Returns "" for anything that isn't an absolute http(s)
+// URL with a host.
+func canonicalPeerURL(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return u.Scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+}
+
+// bootstrapRole decides this node's part in a uniform-config cluster bring-up,
+// where every node is handed the same peer set (including its own advertised
+// URL). It returns active=true only when one of selfURLs is a member of the
+// canonical peer set — the signal that this is a self-inclusive set, not an
+// ordinary join. When active, the node whose canonical URL sorts first across
+// the set is the single bootstrapper (bootstrap=true); every other node joins.
+// This is coordination-free and split-brain-safe: exactly one node is the
+// canonical minimum. active=false means self isn't in the set — an ordinary join.
+func bootstrapRole(peers, selfURLs []string) (bootstrap, active bool) {
+	self := make(map[string]struct{}, len(selfURLs))
+	for _, s := range selfURLs {
+		if c := canonicalPeerURL(s); c != "" {
+			self[c] = struct{}{}
+		}
+	}
+	if len(self) == 0 {
+		return false, false
+	}
+	min, inSet := "", false
+	for _, p := range peers {
+		c := canonicalPeerURL(p)
+		if c == "" {
+			continue
+		}
+		if _, ok := self[c]; ok {
+			inSet = true
+		}
+		if min == "" || c < min {
+			min = c
+		}
+	}
+	if !inSet {
+		return false, false
+	}
+	_, bootstrap = self[min]
+	return bootstrap, true
+}
+
+// removeSelf drops the entries of peers whose canonical form matches one of
+// selfURLs — so a joining node in a self-inclusive set doesn't try to add itself.
+func removeSelf(peers, selfURLs []string) []string {
+	self := make(map[string]struct{}, len(selfURLs))
+	for _, s := range selfURLs {
+		if c := canonicalPeerURL(s); c != "" {
+			self[c] = struct{}{}
+		}
+	}
+	out := peers[:0:0]
+	for _, p := range peers {
+		if _, ok := self[canonicalPeerURL(p)]; !ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// hasMemberData reports whether the configured data dir already holds a started
+// member's write-ahead log — i.e. this is a restart and the node should boot
+// from the WAL rather than join or bootstrap. An unset or WAL-less dir is a
+// fresh node.
+func (p *peerJoiner) hasMemberData() bool {
+	p.mu.Lock()
+	dir := p.cfg.Dir
+	p.mu.Unlock()
+	if dir == "" {
+		return false
+	}
+	return fileutil.Exist(filepath.Join(dir, "member", "wal"))
+}
+
+// selfPeerURLs returns this node's advertised peer URLs as strings — the
+// addresses the cluster dials it at. Empty until WithPeerListener set them (or a
+// listener materialized), which is why the uniform-config race only engages for
+// a node with an explicit advertised URL.
+func (p *peerJoiner) selfPeerURLs() []string {
+	p.mu.Lock()
+	urls := p.cfg.AdvertisePeerUrls
+	p.mu.Unlock()
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, u.String())
+	}
+	return out
 }

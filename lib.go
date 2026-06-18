@@ -61,6 +61,14 @@ func New() Etcd {
 // array of strings — so a node can be aimed at a cluster by environment alone;
 // with no peers from either source, From()...Join() bootstraps.
 //
+// A whole cluster can come up from one identical call. When a node's own
+// advertised peer URL (WithPeerListener) is included in the peer set — every
+// node handed the same self-inclusive list — Join elects one bootstrapper with
+// no coordination (the lowest URL bootstraps, the rest join), so no node need be
+// special-cased. Bring the nodes up concurrently. And if the data dir already
+// holds a member's WAL, Join boots from it (a restart), so the same call is safe
+// to re-run. See EtcdPeer.Join.
+//
 // Join runs entirely over the cluster's peer (raft) listener: the node POSTs
 // itself to a peer's /libetcd/v1/join endpoint, restores the snapshot the peer
 // streams back, starts, and promotes itself to a voting member — no networked

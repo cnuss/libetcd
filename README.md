@@ -118,6 +118,16 @@ arguments to `From` (either alone works; together they combine). So a node can
 be aimed at a cluster purely by environment, with no code change. With no peers
 from either source, `From()...Join()` still bootstraps.
 
+A whole cluster can also come up from **one identical call on every node**. When
+a node's own advertised peer URL (`WithPeerListener`) is part of the peer set —
+every node handed the same self-inclusive list (e.g. the same `LIBETCD_PEERS`) —
+`Join` elects a single bootstrapper with no coordination: the node whose URL
+sorts first bootstraps, the rest join it. No node is special-cased; bring them
+up concurrently. It's split-brain-safe (exactly one node is the canonical
+minimum), though the lowest node must come up for the others to join. And
+because a non-empty data dir makes `Join` boot from the WAL (a restart), the
+same call is safe to re-run when a node restarts.
+
 Joins are safe to run concurrently — `Join` serializes membership changes
 through a lock held in the target cluster, so several nodes (even in separate
 processes) can call it at once. The lock writes transient coordination keys

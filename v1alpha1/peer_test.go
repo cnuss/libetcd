@@ -1,11 +1,16 @@
 package v1alpha1
 
 import (
+	"context"
+	"net"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	v1 "github.com/cnuss/libetcd/v1"
 )
 
 // TestEnvPeers covers parsing the LIBETCD_PEERS value: empty, CSV, JSON array,
@@ -53,6 +58,142 @@ func TestJoinFoldsEnvPeers(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("Join took %v, want fail-fast", elapsed)
+	}
+}
+
+// TestBootstrapRace brings up three nodes with identical config — every node
+// gets the same peer set (its own advertised loopback URL included) and calls
+// Join concurrently. No node is special-cased: the lowest URL bootstraps, the
+// other two join it, and they converge on one three-member voting cluster. This
+// is the uniform-config path end to end (in-process, loopback, no tunnels).
+func TestBootstrapRace(t *testing.T) {
+	const n = 3
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// Bind every peer listener first so all URLs are known up front, then hand
+	// the same set to all three nodes.
+	lis := make([]net.Listener, n)
+	urls := make([]string, n)
+	for i := range n {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lis[i] = l
+		urls[i] = "http://" + l.Addr().String()
+	}
+
+	nodes := make([]v1.EtcdPeer, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		nodes[i] = From(urls...).WithDir(t.TempDir()).WithPeerListener(lis[i]).WithContext(ctx)
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); errs[i] = nodes[i].Join() }(i)
+	}
+	wg.Wait()
+	t.Cleanup(func() {
+		for _, nd := range nodes {
+			if nd != nil {
+				_ = nd.Stop()
+			}
+		}
+	})
+
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("node %d (%s) Join: %v", i, urls[i], e)
+		}
+	}
+
+	// Every node sees the same three-member, all-voting cluster.
+	for i, nd := range nodes {
+		ml, err := nd.Self().MemberList(ctx)
+		if err != nil {
+			t.Fatalf("node %d MemberList: %v", i, err)
+		}
+		if len(ml.Members) != n {
+			t.Fatalf("node %d sees %d members, want %d", i, len(ml.Members), n)
+		}
+		st, err := nd.Self().Status(ctx, "")
+		if err != nil {
+			t.Fatalf("node %d Status: %v", i, err)
+		}
+		if st.IsLearner {
+			t.Errorf("node %d (%s) still a learner; want voter", i, urls[i])
+		}
+	}
+}
+
+// TestCanonicalPeerURL covers the membership-comparison normalization: default
+// scheme, lowercase host, default-port fill, path drop, and rejection of
+// non-http(s)/hostless input.
+func TestCanonicalPeerURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"a:2380", "http://a:2380"},
+		{"http://a:2380", "http://a:2380"},
+		{"https://b", "https://b:443"},
+		{"http://b", "http://b:80"},
+		{"https://b:2380/", "https://b:2380"},
+		{"HTTP://Host.Example:2380", "http://host.example:2380"},
+		{"https://x.trycloudflare.com", "https://x.trycloudflare.com:443"},
+		{"ftp://x:2380", ""},
+		{"http://", ""},
+	}
+	for _, tc := range cases {
+		if got := canonicalPeerURL(tc.in); got != tc.want {
+			t.Errorf("canonicalPeerURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestBootstrapRole covers the uniform-config election: not-in-set is an
+// ordinary join (inactive), the canonical-minimum self bootstraps, every other
+// self joins, and canonicalization makes the self-vs-set match robust across URL
+// forms (port-fill, case).
+func TestBootstrapRole(t *testing.T) {
+	cases := []struct {
+		name          string
+		peers         []string
+		self          []string
+		wantBootstrap bool
+		wantActive    bool
+	}{
+		{"self not in set: ordinary join", []string{"a:2380", "b:2380"}, []string{"c:2380"}, false, false},
+		{"no self urls: inactive", []string{"a:2380", "b:2380"}, nil, false, false},
+		{"self is the minimum: bootstrap", []string{"c:2380", "a:2380", "b:2380"}, []string{"a:2380"}, true, true},
+		{"self not minimum: join", []string{"c:2380", "a:2380", "b:2380"}, []string{"b:2380"}, false, true},
+		{"single self-only set: bootstrap", []string{"a:2380"}, []string{"a:2380"}, true, true},
+		{"canonical match across forms (port-fill)", []string{"https://b:443", "https://a"}, []string{"https://a:443"}, true, true},
+		{"canonical match across case", []string{"http://z:2380", "http://A:2380"}, []string{"http://a:2380"}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bootstrap, active := bootstrapRole(tc.peers, tc.self)
+			if bootstrap != tc.wantBootstrap || active != tc.wantActive {
+				t.Fatalf("bootstrapRole(%q, %q) = (bootstrap %v, active %v), want (%v, %v)",
+					tc.peers, tc.self, bootstrap, active, tc.wantBootstrap, tc.wantActive)
+			}
+		})
+	}
+}
+
+// TestRemoveSelf: a joiner drops its own URL (by canonical match) from the dial
+// set while keeping the others in their original form.
+func TestRemoveSelf(t *testing.T) {
+	got := removeSelf([]string{"a:2380", "http://b:2380", "https://c:443"}, []string{"http://b:2380"})
+	if want := []string{"a:2380", "https://c:443"}; !slices.Equal(got, want) {
+		t.Fatalf("removeSelf = %q, want %q", got, want)
+	}
+	// Canonical match: self given without scheme/port still removes the entry.
+	got = removeSelf([]string{"https://b:443", "https://c:443"}, []string{"https://b"})
+	if want := []string{"https://c:443"}; !slices.Equal(got, want) {
+		t.Fatalf("removeSelf (canonical) = %q, want %q", got, want)
 	}
 }
 
