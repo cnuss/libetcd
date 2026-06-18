@@ -2,9 +2,11 @@ package e2e
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -123,9 +125,17 @@ func newTunnelNode(ctx context.Context, selfURL string) (v1.EtcdPeer, *http.Serv
 	if err != nil {
 		return nil, nil, err
 	}
-	tun := libtunnel.From(u.Hostname()).WithContext(ctx).WithListener(l)
+	// Diagnostic logging (macOS tunnel DNS flake): tunnel connection state +
+	// etcd raft/join, both tagged by host (the etcd member name carries it), to
+	// stderr so a CI failure shows what each node was doing.
+	tag := u.Hostname()
+	tlog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})).With("tunnel", tag)
+	tun := libtunnel.From(u.Hostname()).WithContext(ctx).WithLogger(tlog).WithListener(l)
 
-	etcd := libetcd.From(libtunnel.Hosts()...).WithPeerListener(nil, tun.URL().String())
+	etcd := libetcd.From(libtunnel.Hosts()...).
+		WithName(tag).
+		WithPeerListener(nil, tun.URL().String()).
+		WithLog("info", os.Stderr)
 	if err := etcd.Join(); err != nil {
 		return nil, nil, err
 	}
