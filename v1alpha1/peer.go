@@ -250,19 +250,23 @@ func (p *peerJoiner) Join() (err error) {
 	}
 
 	// In a self-inclusive set this node is a joiner (the bootstrapper short-
-	// circuited to Start above), so drop our own URL — we dial the others, not
-	// ourselves — and dial them canonical-lowest first, so the bootstrapper (the
-	// minimum, the one node guaranteed to serve) is tried before any peer that is
-	// itself still joining. Without that ordering a joiner can POST its member-add
-	// to a not-yet-serving peer whose socket is up but unanswered (a tunnel or
-	// proxy accepts the connection), hanging the whole join budget before it ever
-	// reaches the bootstrapper.
+	// circuited to Start above). The bootstrapper — the canonical-lowest peer —
+	// is the only valid join target during a uniform-config bring-up: the other
+	// peers are co-joiners that aren't serving yet, so dialing them is pointless
+	// and harmful. A member-add POST to a not-yet-serving peer whose socket is up
+	// but unanswered (a tunnel or proxy accepts the connection without replying)
+	// hangs the whole join budget. So dial only the bootstrapper; the retry loop
+	// waits for it to come up (its DNS to propagate, its server to start) rather
+	// than wasting the budget on a co-joiner.
 	dialSet := p.peers
 	if raceActive {
 		dialSet = removeSelf(p.peers, selfURLs)
 		slices.SortFunc(dialSet, func(a, b string) int {
 			return strings.Compare(canonicalPeerURL(a), canonicalPeerURL(b))
 		})
+		if len(dialSet) > 0 {
+			dialSet = dialSet[:1]
+		}
 	}
 	peers, droppedPeers := sanitizePeers(dialSet)
 	if len(droppedPeers) > 0 {
