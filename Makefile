@@ -45,7 +45,7 @@ test:
 # otherwise pick up example source changes. e2e is its own module (it imports
 # libtunnel, which the library module must not), so run it from its own dir.
 e2e:
-	cd e2e && go test -count=1 -v ./...
+	cd e2e && go test -count=1 -parallel 1 -v ./...
 
 # Run an example by name, forwarding any trailing words as args:
 #   make run single-node

@@ -26,6 +26,10 @@ func TestLoadJoin(t *testing.T) {
 		joinerCount = 3
 		writerCount = 4
 		keyPrefix   = "load/"
+		// Throttle each writer so the leader keeps headroom for the joiners'
+		// raft reconfigs; an unthrottled spin saturates a slow CI leader and the
+		// member-add times out within the join budget.
+		writerThrottle = 5 * time.Millisecond
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -79,6 +83,8 @@ func TestLoadJoin(t *testing.T) {
 				ackMu.Lock()
 				acknowledged[key] = val
 				ackMu.Unlock()
+
+				time.Sleep(writerThrottle)
 			}
 		}(writerID)
 	}
