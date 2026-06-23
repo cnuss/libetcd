@@ -10,6 +10,7 @@ use (
 	./e2e
 	./examples/async-join
 	./examples/dir-handoff
+	./examples/discovery
 	./examples/headless-leader
 	./examples/load-join
 	./examples/multi-node
