@@ -1,4 +1,4 @@
-go 1.26
+go 1.26.1
 
 // Workspace for local development: the library plus every standalone example
 // module. Each examples/<name> also carries its own go.mod + replace so it
@@ -6,6 +6,7 @@ go 1.26
 // with GOWORK=off to prove that standalone resolution.
 use (
 	.
+	./cmd/disco
 	./e2e
 	./examples/async-join
 	./examples/dir-handoff

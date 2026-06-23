@@ -1,0 +1,8 @@
+---
+# rowdy (rowdy.run) config: serve the disco container-on-a-port as a Lambda,
+# fronting https://libetcd.nuss.io. All paths fall through to the local server.
+apiVersion: rowdy.run/v1alpha1
+kind: Routes
+spec:
+  default: "http://localhost:8080/"
+  paths: {}
