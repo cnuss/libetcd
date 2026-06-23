@@ -59,7 +59,7 @@ Requires Go 1.23 or later (the floor etcd's `embed` package needs).
 git clone https://github.com/cnuss/libetcd.git
 cd libetcd
 make test   # library unit tests (fast, in-package)
-make e2e    # builds and runs every example binary
+make e2e    # native end-to-end tests (boot real nodes) + the example binaries
 ```
 
 Run a specific example locally:
@@ -103,13 +103,19 @@ Easy to get wrong from the diff alone:
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
 
-## Adding an example
+## Adding a behavior test or an example
 
-Examples live in `./examples/<name>/main.go`. Keep each example self-contained
-(there's no shared internal package — the duplication is intentional, so each
-example is copy-pasteable on its own).
+Most behaviors belong in the **e2e suite as a native test**, not an example. Add
+`e2e/<name>_test.go` in `package e2e`: one `func TestX(t *testing.T)` that calls
+`gateE2E(t)` first, boots real nodes in-process through the library, and asserts
+with `t.Fatal`. No module, no `go.work` entry, no table row — it runs under
+`make e2e`. Name any helpers uniquely (the package is shared across the test
+files). The e2e module may import things the library must not (e.g. libtunnel).
 
-Each example is its own module. Create:
+Reserve `examples/` for the small set of canonical, copy-pasteable demos
+(`single-node`, `multi-node`, `discovery`). Add one only when a user should be
+able to lift it whole as a starter — there's no shared internal package, so the
+duplication is intentional. Each example is its own module:
 
 ```sh
 mkdir -p examples/<name>
@@ -127,14 +133,12 @@ EOF
 GOWORK=off go mod tidy          # resolves go.sum + the example's direct deps
 ```
 
-Then add the module to the `use (...)` list in the repo-root `go.work`, print a
-single recognizable line so the e2e harness can assert on it, add a row to the
-`cases` table in `e2e/e2e_test.go` (name + expected substring), and add a row to
-the README's example table. The e2e harness builds each example's module
-standalone and runs the binary, so an example that reaches the network at
-runtime (e.g. `with-tunnel` opens real Cloudflare tunnels — libtunnel embeds the
-client, no external binary needed) needs that connectivity in the e2e
-environment.
+Then add the module to the `use (...)` list in the repo-root `go.work`. To have
+the harness run-assert it, print a single recognizable line and add a row to the
+`cases` table in `e2e/e2e_test.go` (name + expected substring) plus the README's
+example table. A test or example that reaches the network at runtime (a tunnel
+test opens real Cloudflare tunnels — libtunnel embeds the client, no external
+binary) needs that connectivity in the e2e environment.
 
 ## Branch / PR flow
 

@@ -1,31 +1,30 @@
-// Command with-tunnel is the single-node example, but reachable across NAT:
-// the node serves its own peer (raft) HTTP on a local socket fronted by a
-// public Cloudflare tunnel (libtunnel) and advertises that tunnel URL, so other
-// members could join it without a routable address of its own.
+package e2e
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"testing"
+
+	"github.com/cnuss/libetcd"
+	"github.com/cnuss/libtunnel"
+)
+
+// TestSingleNodeTunnel boots a single libetcd node fronted by a public
+// Cloudflare tunnel (libtunnel): the node serves its own peer (raft) HTTP on a
+// local socket and advertises the tunnel URL, so other members could join it
+// without a routable address of its own.
 //
 // It is the minimal shape of BYO peer serving:
 //   - WithPeerListener(nil, tunnelURL) — libetcd binds no peer socket; we serve
 //     PeerHandler() ourselves at the advertised tunnel URL.
 //   - From() with no peers bootstraps a single-member cluster; Join() starts it.
 //
-// A network-dependent demo: it opens a real Cloudflare tunnel, so it needs
-// outbound network (no external binary — libtunnel embeds the client). The
-// multi-node version lives as TestMultiNodeTunnel in the e2e module; run this by
-// hand with `make run with-tunnel`.
-package main
+// In-process, dials a real Cloudflare tunnel — gated like the rest of the suite
+// (gateE2E), needs outbound network.
+func TestSingleNodeTunnel(t *testing.T) {
+	gateE2E(t)
 
-import (
-	"context"
-	"fmt"
-	"log"
-	"net"
-	"net/http"
-
-	"github.com/cnuss/libetcd"
-	"github.com/cnuss/libtunnel"
-)
-
-func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // cancelling the context gracefully stops the node + tunnel
 
@@ -33,7 +32,7 @@ func main() {
 	// WithContext makes tunnel.URL() block until the tunnel is up and routable.
 	lis, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	tunnel := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithListener(lis)
 
@@ -42,7 +41,7 @@ func main() {
 	// raft HTTP ourselves. From() with no peers bootstraps; Join() starts it.
 	e := libetcd.From().WithPeerListener(nil, tunnel.URL().String()).WithContext(ctx)
 	if err := e.Join(); err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	// Stop the node, but only after we stop serving (defers run LIFO): Stop
 	// closes the etcd backend, and a peer request reaching the handler after
@@ -61,12 +60,13 @@ func main() {
 
 	cli := e.Client()
 	if _, err := cli.Put(ctx, "greeting", "hello world"); err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	resp, err := cli.Get(ctx, "greeting")
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
-
-	fmt.Printf("with-tunnel success: greeting %q served, advertising peer %v\n", resp.Kvs[0].Value, e.Peers())
+	if got := string(resp.Kvs[0].Value); got != "hello world" {
+		t.Fatalf("greeting = %q, want %q", got, "hello world")
+	}
 }
