@@ -283,8 +283,13 @@ func TestSelfIssuer(t *testing.T) {
 		}
 	}
 
-	// Mint a disco-native identity.
-	resp, body := do(t, jsonReq(http.MethodPost, "/token", ""))
+	// Mint a disco-native identity. /token takes no body and accepts GET or POST
+	// with any content type — use a bare GET (no headers) to prove that.
+	greq, err := http.NewRequest(http.MethodGet, url+"/token", nil)
+	if err != nil {
+		t.Fatalf("token request: %v", err)
+	}
+	resp, body := do(t, greq)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token status %d: %s", resp.StatusCode, body)
 	}

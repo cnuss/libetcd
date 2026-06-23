@@ -92,9 +92,12 @@ func (s *Seed) WebService() *restful.WebService {
 
 	// Self-issuer (optional): mint a disco-native identity and publish the
 	// discovery + JWKS that verify it. Unauthenticated by design — /token hands
-	// out a fresh, isolated cluster namespace.
+	// out a fresh, isolated cluster namespace. It takes no body, so accept either
+	// method and any content type (a bare `curl https://.../token` should work),
+	// overriding the WebService-level JSON consume.
 	if s.issuer != nil {
-		ws.Route(ws.POST("/token").To(s.handleToken))
+		ws.Route(ws.GET("/token").Consumes("*/*").To(s.handleToken))
+		ws.Route(ws.POST("/token").Consumes("*/*").To(s.handleToken))
 		ws.Route(ws.GET(issuer.DiscoveryPath).To(s.handleDiscovery))
 		ws.Route(ws.GET(issuer.JWKSPath).To(s.handleJWKS))
 	}
