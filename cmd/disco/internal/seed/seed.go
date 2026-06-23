@@ -1,6 +1,6 @@
 // Package seed serves the disco discovery API: claim, register, and roster,
-// each a thin translation of a verified request onto a store.Store operation
-// (issue #108). The seed holds no cluster state of its own.
+// each a thin translation of a verified request onto a store.Store operation.
+// The seed holds no cluster state of its own.
 package seed
 
 import (
@@ -115,17 +115,17 @@ var (
 	errMint       = errors.New("token minting failed")
 )
 
-// verify is the JWT gate (issue #108: seed-side verification). The node carries
-// its cluster JWT as a bearer; the seed verifies signature + iss + exp against
-// the trusted issuers' OIDC/JWKS and extracts sub — the cluster identity that
-// namespaces the roster. Fail-closed: any failure rejects the request, so the
-// seed never serves an unauthenticated discovery op.
+// verify is the seed-side JWT gate. The node carries its cluster JWT as a
+// bearer; the seed verifies signature + iss + exp against the trusted issuers'
+// OIDC/JWKS and extracts sub — the cluster identity that namespaces the roster.
+// Fail-closed: any failure rejects the request, so the seed never serves an
+// unauthenticated discovery op.
 //
-// Audience is not enforced yet: a valid token from any caller of a trusted
-// issuer (e.g. any GitHub Actions workflow) passes, namespaced by its own sub —
-// it can form or join only clusters under that sub, never touch another's.
-// Tighten later with an expected audience and/or an allowed-sub policy.
-// TODO(#108).
+// TODO: audience is not enforced yet — a valid token from any caller of a
+// trusted issuer (e.g. any GitHub Actions workflow) passes, namespaced by its
+// own sub, so it can form or join only clusters under that sub, never touch
+// another's. Tighten later with an expected audience and/or an allowed-sub
+// policy.
 func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
 	raw := bearerToken(req)
 	if raw == "" {

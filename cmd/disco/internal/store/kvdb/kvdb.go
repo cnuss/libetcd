@@ -51,7 +51,7 @@ import (
 )
 
 // entryTTL is the lifetime stamped on claim and roster keys. Clients refresh
-// well within it (issue #108: TTL 10s / keepalive 3s); a member that stops
+// well within it (TTL 10s / keepalive 3s); a member that stops
 // refreshing is pruned.
 const entryTTL = 10 * time.Second
 
