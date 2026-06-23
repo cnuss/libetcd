@@ -26,8 +26,9 @@ import (
 // fakeStore records the sub each op is called with so the test can assert the
 // verified identity propagated from the JWT into the handlers.
 type fakeStore struct {
-	won  bool
-	urls []string
+	won    bool
+	urls   []string
+	secret string
 
 	mu   sync.Mutex
 	subs []string
@@ -39,17 +40,17 @@ func (f *fakeStore) note(sub string) {
 	f.mu.Unlock()
 }
 
-func (f *fakeStore) Claim(_ context.Context, sub string) (bool, error) {
+func (f *fakeStore) Claim(_ context.Context, sub string) (bool, string, error) {
 	f.note(sub)
-	return f.won, nil
+	return f.won, f.secret, nil
 }
 func (f *fakeStore) Register(_ context.Context, sub, _, _ string) error {
 	f.note(sub)
 	return nil
 }
-func (f *fakeStore) Roster(_ context.Context, sub string) ([]string, error) {
+func (f *fakeStore) Roster(_ context.Context, sub string) ([]string, string, error) {
 	f.note(sub)
-	return f.urls, nil
+	return f.urls, f.secret, nil
 }
 
 // newMockIssuer stands up an OIDC issuer: a discovery document pointing at a

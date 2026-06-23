@@ -65,6 +65,7 @@ func TestProbeSeedUnreachable(t *testing.T) {
 type mockSeed struct {
 	ts          *httptest.Server
 	claimStatus int
+	secret      string
 
 	mu           sync.Mutex
 	gotAuth      string
@@ -83,6 +84,13 @@ func newMockSeed(t *testing.T, claimStatus int) *mockSeed {
 	})
 	mux.HandleFunc("/claim", func(w http.ResponseWriter, r *http.Request) {
 		m.record(r)
+		if m.claimStatus == http.StatusOK {
+			m.mu.Lock()
+			secret := m.secret
+			m.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"won": true, "secret": secret})
+			return
+		}
 		w.WriteHeader(m.claimStatus)
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
@@ -99,8 +107,9 @@ func newMockSeed(t *testing.T, claimStatus int) *mockSeed {
 		m.mu.Lock()
 		m.rosterHits++
 		urls := m.rosterURLs
+		secret := m.secret
 		m.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string][]string{"urls": urls})
+		_ = json.NewEncoder(w).Encode(map[string]any{"urls": urls, "secret": secret})
 	})
 	m.ts = httptest.NewServer(mux)
 	t.Cleanup(m.ts.Close)
@@ -130,12 +139,20 @@ func TestSeedClaim(t *testing.T) {
 		won    bool
 	}{{200, true}, {409, false}} {
 		m := newMockSeed(t, c.status)
-		won, err := m.seed("jwt-abc").claim(context.Background())
+		m.secret = "cluster-secret"
+		won, secret, err := m.seed("jwt-abc").claim(context.Background())
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
 		if won != c.won {
 			t.Fatalf("status %d: won=%v, want %v", c.status, won, c.won)
+		}
+		wantSecret := ""
+		if c.won {
+			wantSecret = "cluster-secret" // the winner gets the minted secret
+		}
+		if secret != wantSecret {
+			t.Fatalf("status %d: secret=%q, want %q", c.status, secret, wantSecret)
 		}
 		m.mu.Lock()
 		if m.gotAuth != "Bearer jwt-abc" || !m.gotNoCache {
@@ -148,15 +165,17 @@ func TestSeedClaim(t *testing.T) {
 // TestSeedClaimError surfaces an unexpected status.
 func TestSeedClaimError(t *testing.T) {
 	m := newMockSeed(t, 500)
-	if _, err := m.seed("jwt").claim(context.Background()); err == nil {
+	if _, _, err := m.seed("jwt").claim(context.Background()); err == nil {
 		t.Fatal("claim: want error on 500")
 	}
 }
 
-// TestSeedRegisterRoster: register posts {id,url}; roster returns the urls.
+// TestSeedRegisterRoster: register posts {id,url}; roster returns the urls and
+// the cluster secret.
 func TestSeedRegisterRoster(t *testing.T) {
 	m := newMockSeed(t, 200)
 	m.rosterURLs = []string{"http://a:2380", "http://b:2380"}
+	m.secret = "cluster-secret"
 	s := m.seed("jwt")
 
 	if err := s.register(context.Background(), "node-1", "http://a:2380"); err != nil {
@@ -169,12 +188,15 @@ func TestSeedRegisterRoster(t *testing.T) {
 		t.Fatalf("register body = %v", got)
 	}
 
-	urls, err := s.roster(context.Background())
+	urls, secret, err := s.roster(context.Background())
 	if err != nil {
 		t.Fatalf("roster: %v", err)
 	}
 	if len(urls) != 2 || urls[0] != "http://a:2380" {
 		t.Fatalf("roster = %v", urls)
+	}
+	if secret != "cluster-secret" {
+		t.Fatalf("roster secret = %q, want cluster-secret", secret)
 	}
 }
 
@@ -190,7 +212,7 @@ func TestRosterWait(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	urls, err := s.rosterWait(ctx)
+	urls, _, err := s.rosterWait(ctx)
 	if err != nil {
 		t.Fatalf("rosterWait: %v", err)
 	}
@@ -204,7 +226,7 @@ func TestRosterWaitDeadline(t *testing.T) {
 	m := newMockSeed(t, 200) // rosterURLs stays empty
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	if _, err := m.seed("jwt").rosterWait(ctx); err == nil {
+	if _, _, err := m.seed("jwt").rosterWait(ctx); err == nil {
 		t.Fatal("rosterWait: want error on empty-until-deadline")
 	}
 }

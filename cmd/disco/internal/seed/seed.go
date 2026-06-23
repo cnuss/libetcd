@@ -225,7 +225,7 @@ func sub(req *restful.Request) string {
 // cluster wins (200) and bootstraps; the rest get 409 and fall back to joining
 // the roster. See store.Store.Claim.
 func (s *Seed) handleClaim(req *restful.Request, resp *restful.Response) {
-	won, err := s.store.Claim(req.Request.Context(), sub(req))
+	won, secret, err := s.store.Claim(req.Request.Context(), sub(req))
 	if err != nil {
 		writeStoreError(resp, err)
 		return
@@ -234,7 +234,7 @@ func (s *Seed) handleClaim(req *restful.Request, resp *restful.Response) {
 		_ = resp.WriteError(http.StatusConflict, errClaimHeld)
 		return
 	}
-	_ = resp.WriteAsJson(claimResponse{Won: true})
+	_ = resp.WriteAsJson(claimResponse{Won: true, Secret: secret})
 }
 
 // handleRegister advertises the caller as a live join target with a TTL.
@@ -254,12 +254,12 @@ func (s *Seed) handleRegister(req *restful.Request, resp *restful.Response) {
 
 // handleRoster returns the current live join-target URLs for this cluster.
 func (s *Seed) handleRoster(req *restful.Request, resp *restful.Response) {
-	urls, err := s.store.Roster(req.Request.Context(), sub(req))
+	urls, secret, err := s.store.Roster(req.Request.Context(), sub(req))
 	if err != nil {
 		writeStoreError(resp, err)
 		return
 	}
-	_ = resp.WriteAsJson(rosterResponse{URLs: urls})
+	_ = resp.WriteAsJson(rosterResponse{URLs: urls, Secret: secret})
 }
 
 // handleHealth is an unauthenticated liveness probe (used by rowdy / the
@@ -334,10 +334,12 @@ type (
 		URL string `json:"url"` // advertised peer URL to hand future joiners
 	}
 	rosterResponse struct {
-		URLs []string `json:"urls"`
+		URLs   []string `json:"urls"`
+		Secret string   `json:"secret,omitempty"` // the cluster's per-sub join secret
 	}
 	claimResponse struct {
-		Won bool `json:"won"`
+		Won    bool   `json:"won"`
+		Secret string `json:"secret,omitempty"` // minted by the winner
 	}
 	tokenResponse struct {
 		Token     string `json:"token"`

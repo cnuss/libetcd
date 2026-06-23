@@ -36,6 +36,7 @@ package kvdb
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -58,6 +59,10 @@ import (
 const (
 	claimTTL  = 6 * time.Second
 	rosterTTL = 10 * time.Second
+	// clusterSecretTTL is generous — the secret must outlive cluster formation
+	// and a typical run. A cluster expected to live longer than this would need
+	// the secret refreshed (not done yet).
+	clusterSecretTTL = time.Hour
 )
 
 // client is the kvdb.io-backed store.Store.
@@ -92,21 +97,66 @@ func New() (store.Store, error) {
 // wins; everyone after reads >1 and joins. The TTL self-heals a bootstrapper
 // that dies before the cluster forms (the key expires and a later arrival can
 // re-win).
-func (c *client) Claim(ctx context.Context, sub string) (bool, error) {
+func (c *client) Claim(ctx context.Context, sub string) (won bool, secret string, err error) {
 	resp, err := c.do(ctx, http.MethodPatch, "/c/"+seg(sub), ttlQuery(c.claimTTL), strings.NewReader("+1"))
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	defer resp.Body.Close()
 	body := snippet(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("kvdb claim: %s: %s", resp.Status, body)
+		return false, "", fmt.Errorf("kvdb claim: %s: %s", resp.Status, body)
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(body))
 	if err != nil {
-		return false, fmt.Errorf("kvdb claim: bad counter %q: %w", body, err)
+		return false, "", fmt.Errorf("kvdb claim: bad counter %q: %w", body, err)
 	}
-	return n == 1, nil
+	if n == 1 {
+		// The winner mints the cluster secret. Exactly one caller reads 1, so
+		// there is no create race.
+		secret, err = c.mintSecret(ctx, sub)
+		return true, secret, err
+	}
+	// A loser may race ahead of the winner's mint; it gets "" here and reads the
+	// secret from Roster once the roster is non-empty (the winner mints before
+	// it registers).
+	secret, _ = c.getSecret(ctx, sub)
+	return false, secret, nil
+}
+
+// mintSecret generates a random cluster secret and stores it under k/<sub>.
+func (c *client) mintSecret(ctx context.Context, sub string) (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("kvdb: cluster secret: %w", err)
+	}
+	secret := hex.EncodeToString(b[:])
+	resp, err := c.do(ctx, http.MethodPut, "/k/"+seg(sub), ttlQuery(clusterSecretTTL), strings.NewReader(secret))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return "", fmt.Errorf("kvdb: cluster secret put: %s: %s", resp.Status, snippet(resp.Body))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return secret, nil
+}
+
+// getSecret reads the cluster secret, or "" if it hasn't been minted yet.
+func (c *client) getSecret(ctx context.Context, sub string) (string, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/k/"+seg(sub), "", nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("kvdb: cluster secret get: %s", resp.Status)
+	}
+	return snippet(resp.Body), nil
 }
 
 // Register does PUT r/<sub>/<id>=url with ?ttl. Idempotent: re-calling with the
@@ -124,23 +174,23 @@ func (c *client) Register(ctx context.Context, sub, id, url string) error {
 	return nil
 }
 
-// Roster does GET ?prefix=r/<sub>/&values=true and returns the urls. kvdb
-// answers with [[key, value], ...]; we keep the values (the advertised URLs).
-func (c *client) Roster(ctx context.Context, sub string) ([]string, error) {
+// Roster does GET ?prefix=r/<sub>/&values=true for the urls (kvdb answers with
+// [[key, value], ...]; we keep the values) plus a read of the cluster secret.
+func (c *client) Roster(ctx context.Context, sub string) (urls []string, secret string, err error) {
 	q := "prefix=r/" + seg(sub) + "/&values=true&format=json"
 	resp, err := c.do(ctx, http.MethodGet, "/", q, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("kvdb roster: %s: %s", resp.Status, snippet(resp.Body))
+		return nil, "", fmt.Errorf("kvdb roster: %s: %s", resp.Status, snippet(resp.Body))
 	}
 	var pairs [][]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&pairs); err != nil {
-		return nil, fmt.Errorf("kvdb roster: decode: %w", err)
+		return nil, "", fmt.Errorf("kvdb roster: decode: %w", err)
 	}
-	urls := make([]string, 0, len(pairs))
+	urls = make([]string, 0, len(pairs))
 	for _, p := range pairs {
 		if len(p) < 2 {
 			continue
@@ -151,7 +201,8 @@ func (c *client) Roster(ctx context.Context, sub string) ([]string, error) {
 		}
 		urls = append(urls, u)
 	}
-	return urls, nil
+	secret, _ = c.getSecret(ctx, sub)
+	return urls, secret, nil
 }
 
 // do builds and sends a kvdb request with the seed's Basic auth and the

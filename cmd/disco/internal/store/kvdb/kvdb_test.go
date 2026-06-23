@@ -24,15 +24,19 @@ func TestKVDBLive(t *testing.T) {
 
 	sub := fmt.Sprintf("disco-test-%d", time.Now().UnixNano())
 
-	// First claim wins; a second claim on the same sub loses.
-	won, err := s.Claim(ctx, sub)
+	// First claim wins and mints the cluster secret; a second claim on the same
+	// sub loses.
+	won, secret, err := s.Claim(ctx, sub)
 	if err != nil {
 		t.Fatalf("claim 1: %v", err)
 	}
 	if !won {
 		t.Fatalf("claim 1: won=false, want true (first claim should win)")
 	}
-	won, err = s.Claim(ctx, sub)
+	if secret == "" {
+		t.Fatalf("claim 1: empty cluster secret, want a minted one")
+	}
+	won, _, err = s.Claim(ctx, sub)
 	if err != nil {
 		t.Fatalf("claim 2: %v", err)
 	}
@@ -52,9 +56,12 @@ func TestKVDBLive(t *testing.T) {
 		}
 	}
 
-	urls, err := s.Roster(ctx, sub)
+	urls, rosterSecret, err := s.Roster(ctx, sub)
 	if err != nil {
 		t.Fatalf("roster: %v", err)
+	}
+	if rosterSecret != secret {
+		t.Fatalf("roster secret = %q, want the claim's %q", rosterSecret, secret)
 	}
 	slices.Sort(urls)
 	want := []string{"http://node1:2380", "http://node2:2380"}

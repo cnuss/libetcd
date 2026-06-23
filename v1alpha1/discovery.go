@@ -68,20 +68,29 @@ func probeSeed(ctx context.Context, raw string, hc *http.Client) (seed *discover
 }
 
 // claim attempts the atomic bootstrap claim. won=true to exactly one caller (it
-// bootstraps); the rest get won=false (they join the roster).
-func (s *discoverySeed) claim(ctx context.Context) (won bool, err error) {
+// bootstraps) and the seed returns the freshly minted cluster secret; the rest
+// get won=false and an empty secret (they read it from the roster). The secret —
+// not the JWT — is the cluster's join credential, so every node with the same
+// sub shares it (issue #120).
+func (s *discoverySeed) claim(ctx context.Context) (won bool, secret string, err error) {
 	resp, err := s.do(ctx, http.MethodPost, s.desc.Claim, nil)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var out struct {
+			Secret string `json:"secret"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil {
+			return false, "", fmt.Errorf("claim: decode: %w", err)
+		}
+		return true, out.Secret, nil
 	case http.StatusConflict:
-		return false, nil
+		return false, "", nil
 	default:
-		return false, s.statusError("claim", resp)
+		return false, "", s.statusError("claim", resp)
 	}
 }
 
@@ -104,44 +113,46 @@ func (s *discoverySeed) register(ctx context.Context, id, url string) error {
 	return nil
 }
 
-// roster returns the current live join-target URLs.
-func (s *discoverySeed) roster(ctx context.Context) ([]string, error) {
+// roster returns the current live join-target URLs and the cluster secret.
+func (s *discoverySeed) roster(ctx context.Context) (urls []string, secret string, err error) {
 	resp, err := s.do(ctx, http.MethodGet, s.desc.Roster, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, s.statusError("roster", resp)
+		return nil, "", s.statusError("roster", resp)
 	}
 	var out struct {
-		URLs []string `json:"urls"`
+		URLs   []string `json:"urls"`
+		Secret string   `json:"secret"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
-		return nil, fmt.Errorf("roster: decode: %w", err)
+		return nil, "", fmt.Errorf("roster: decode: %w", err)
 	}
-	return out.URLs, nil
+	return out.URLs, out.Secret, nil
 }
 
-// rosterWait polls roster until it is non-empty or ctx ends. A loser that
-// arrives before the bootstrapper has registered would otherwise see an empty
-// roster.
+// rosterWait polls roster until it is non-empty or ctx ends, returning the live
+// URLs and the cluster secret. A loser that arrives before the bootstrapper has
+// registered would otherwise see an empty roster; once it is non-empty the
+// winner has minted the secret, so both come back together.
 //
-// TODO(#108): per the contract a loser should re-enter the full resolver loop
-// (re-claim, in case the winner died before registering) rather than only
-// waiting on the roster. For now it waits.
-func (s *discoverySeed) rosterWait(ctx context.Context) ([]string, error) {
+// Wait-only by design (issue #108): a winner that dies before registering is
+// recovered by an external Join retry once its short-TTL claim frees, not by
+// re-claiming in this loop.
+func (s *discoverySeed) rosterWait(ctx context.Context) ([]string, string, error) {
 	for {
-		urls, err := s.roster(ctx)
+		urls, secret, err := s.roster(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if len(urls) > 0 {
-			return urls, nil
+			return urls, secret, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("roster: empty until deadline: %w", context.Cause(ctx))
+			return nil, "", fmt.Errorf("roster: empty until deadline: %w", context.Cause(ctx))
 		case <-time.After(time.Second):
 		}
 	}

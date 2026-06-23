@@ -498,30 +498,37 @@ func (p *peerJoiner) joinViaDiscovery(seed *discoverySeed) error {
 		defer cancel()
 	}
 
+	// The JWT is only the seed bearer (identity). The cluster's join credential
+	// is the per-sub secret the seed vends, pinned below as the etcd cluster
+	// token — so all same-sub nodes share one credential and a different sub
+	// can't join (issue #120).
 	p.mu.Lock()
-	token := p.cfg.InitialClusterToken
+	jwt := p.cfg.InitialClusterToken
 	p.mu.Unlock()
-	if token == "" {
+	if jwt == "" {
 		return errors.New("join: discovery requires a cluster token (JWT) — set WithClusterToken")
 	}
-	seed.token = token
+	seed.token = jwt
 
-	won, err := seed.claim(ctx)
+	won, secret, err := seed.claim(ctx)
 	if err != nil {
 		return fmt.Errorf("join: discovery claim: %w", err)
 	}
 	if won {
-		// Bootstrap a fresh single-member cluster.
+		// Bootstrap a fresh single-member cluster under the minted secret.
+		p.pinClusterSecret(secret)
 		if err := p.Start(); err != nil {
 			return err
 		}
 	} else {
-		// Join: the roster gives the live peer set. self isn't in it (we register
-		// only after joining), so joinResolved runs an ordinary join against it.
-		peers, err := seed.rosterWait(ctx)
+		// Join: the roster gives the live peer set and the cluster secret. self
+		// isn't in it (we register only after joining), so joinResolved runs an
+		// ordinary join against it.
+		peers, secret, err := seed.rosterWait(ctx)
 		if err != nil {
 			return fmt.Errorf("join: discovery roster: %w", err)
 		}
+		p.pinClusterSecret(secret)
 		p.peers = peers
 		if err := p.joinResolved(p.selfPeerURLs(), false); err != nil {
 			return err
@@ -531,6 +538,17 @@ func (p *peerJoiner) joinViaDiscovery(seed *discoverySeed) error {
 	// Advertise self so later arrivals discover this node — after it's up and
 	// serving the peer transport. The bootstrapper also holds its claim.
 	return p.registerWithSeed(seed, won)
+}
+
+// pinClusterSecret sets the seed-vended per-sub secret as the cluster's join
+// credential (etcd's InitialClusterToken), replacing the JWT — which was only
+// the seed bearer. Set through the builder so srvcfg re-derives before Start
+// mints the server. An empty secret is a no-op: a seed that doesn't vend one
+// leaves the JWT in place (the pre-#120 shared-token behavior).
+func (p *peerJoiner) pinClusterSecret(secret string) {
+	if secret != "" {
+		p.EtcdImpl.WithClusterToken(secret)
+	}
 }
 
 // registerWithSeed advertises this node's peer URL to the seed and keeps it (and,
@@ -565,7 +583,7 @@ func (p *peerJoiner) registerWithSeed(seed *discoverySeed, bootstrap bool) error
 	// while a winner that dies frees it promptly for a retry to re-win. The
 	// re-claim's won result is irrelevant; it only refreshes the TTL.
 	if bootstrap {
-		go keepalive(kaCtx, func(ctx context.Context) { _, _ = seed.claim(ctx) })
+		go keepalive(kaCtx, func(ctx context.Context) { _, _, _ = seed.claim(ctx) })
 	}
 	return nil
 }
