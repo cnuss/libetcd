@@ -1,6 +1,6 @@
 // Command disco is the libetcd discovery seed — the rendezvous service that
 // lets ephemeral, NAT'd libetcd nodes form a cluster from identical config and
-// zero topology knowledge (issue #108).
+// zero topology knowledge.
 //
 // It serves three HTTP/1.1 endpoints — claim, register, roster — translating
 // them into kvdb.io operations (https://kvdb.io/docs/api/): an atomic
@@ -17,7 +17,7 @@
 // claim is enforced in kvdb, not in process memory, so there is no split-brain
 // across instances and no reserved-concurrency pin.
 //
-// Authentication is seed-side (issue #108): nodes carry the cluster JWT as a
+// Authentication is seed-side: nodes carry the cluster JWT as a
 // bearer, the seed verifies it and uses its sub claim as the cluster identity
 // (roster namespace). The kvdb access token is the seed's secret, held in the
 // environment and never exposed to nodes.
@@ -47,7 +47,11 @@ func main() {
 		log.Fatalf("disco: store init: %v", err)
 	}
 
-	srv := seed.New(backing)
+	// Trust GitHub Actions OIDC, and act as our own issuer (POST /token + JWKS)
+	// for callers without an external IdP.
+	srv := seed.New(backing).
+		WithIssuer("https://token.actions.githubusercontent.com").
+		WithSelfIssuer()
 	defer srv.Close()
 
 	container := restful.NewContainer()
