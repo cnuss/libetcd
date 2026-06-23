@@ -85,6 +85,11 @@ func (s *Seed) WebService() *restful.WebService {
 
 	ws.Route(ws.GET("/healthz").To(s.handleHealth))
 
+	// Sniff target: an unauthenticated descriptor that identifies this URL as a
+	// libetcd discovery seed and advertises its endpoints. A client points From
+	// at the bare URL and probes this to decide discovery-vs-plain-peer.
+	ws.Route(ws.GET(DiscoveryDescriptorPath).To(s.handleDescriptor))
+
 	// Discovery ops require a verified cluster JWT (the verify filter).
 	ws.Route(ws.POST("/claim").Filter(s.verify).To(s.handleClaim))
 	ws.Route(ws.POST("/register").Filter(s.verify).To(s.handleRegister))
@@ -107,6 +112,13 @@ func (s *Seed) WebService() *restful.WebService {
 // subAttr is the request attribute the verify filter sets and handlers read:
 // the cluster identity extracted from the JWT sub claim.
 const subAttr = "sub"
+
+// DiscoveryDescriptorPath is the unauthenticated sniff endpoint; a client probes
+// <url>/.well-known/libetcd-discovery to decide whether a From URL is a seed.
+const DiscoveryDescriptorPath = "/.well-known/libetcd-discovery"
+
+// discoveryVersion is the descriptor's protocol version.
+const discoveryVersion = "v1"
 
 var (
 	errNoBearer   = errors.New("missing bearer token")
@@ -254,6 +266,23 @@ func (s *Seed) handleHealth(_ *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(message{Message: "ok"})
 }
 
+// handleDescriptor serves the discovery descriptor a client sniffs to recognize
+// this URL as a libetcd discovery seed. Always served (discovery works with
+// external JWTs too); token is advertised only when the self-issuer is enabled,
+// since /token 404s otherwise.
+func (s *Seed) handleDescriptor(_ *restful.Request, resp *restful.Response) {
+	d := descriptor{
+		Discovery: discoveryVersion,
+		Claim:     "/claim",
+		Register:  "/register",
+		Roster:    "/roster",
+	}
+	if s.issuer != nil {
+		d.Token = "/token"
+	}
+	_ = resp.WriteAsJson(d)
+}
+
 // handleToken mints a fresh disco-native identity and returns a signed token for
 // it. Unauthenticated: each call yields a new random sub (an isolated cluster
 // namespace), so handing it out freely only lets a caller form/join its own
@@ -312,5 +341,13 @@ type (
 		Token     string `json:"token"`
 		Sub       string `json:"sub"`
 		ExpiresIn int    `json:"expires_in"`
+	}
+	// descriptor is the sniff document: a discovery marker + endpoint paths.
+	descriptor struct {
+		Discovery string `json:"discovery"` // protocol version, e.g. "v1"
+		Token     string `json:"token,omitempty"`
+		Claim     string `json:"claim"`
+		Register  string `json:"register"`
+		Roster    string `json:"roster"`
 	}
 )
