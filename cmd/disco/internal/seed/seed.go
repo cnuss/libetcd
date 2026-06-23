@@ -90,8 +90,10 @@ func (s *Seed) WebService() *restful.WebService {
 	// at the bare URL and probes this to decide discovery-vs-plain-peer.
 	ws.Route(ws.GET(DiscoveryDescriptorPath).To(s.handleDescriptor))
 
-	// Discovery ops require a verified cluster JWT (the verify filter).
-	ws.Route(ws.POST("/claim").Filter(s.verify).To(s.handleClaim))
+	// Discovery ops require a verified cluster JWT (the verify filter). /claim
+	// takes no body, so it overrides the WebService JSON consume to accept any
+	// content type (a bodyless POST otherwise 415s); /register reads a JSON body.
+	ws.Route(ws.POST("/claim").Consumes("*/*").Filter(s.verify).To(s.handleClaim))
 	ws.Route(ws.POST("/register").Filter(s.verify).To(s.handleRegister))
 	ws.Route(ws.GET("/roster").Filter(s.verify).To(s.handleRoster))
 

@@ -48,6 +48,11 @@ type peerJoiner struct {
 	// churning membership with no chance of success. A latched handle rejects
 	// Join immediately instead.
 	exhausted atomic.Bool
+
+	// keepaliveCancel stops the discovery roster keepalive goroutine. Set when a
+	// discovery join registers; cancelled by Stop (and by the user context).
+	// Guarded by the embedded EtcdImpl mu.
+	keepaliveCancel context.CancelFunc
 }
 
 var _ v1.EtcdPeer = (*peerJoiner)(nil)
@@ -153,6 +158,15 @@ func (p *peerJoiner) Join() (err error) {
 		return p.Start()
 	}
 
+	// Discovery: if a configured URL is a discovery seed, resolve the cluster
+	// through it — claim elects bootstrap-vs-join, roster supplies the peer set —
+	// instead of the pre-shared uniform-config path. A sniff miss (not a seed, or
+	// a transient probe error) falls through, so non-seed URLs behave exactly as
+	// before.
+	if seed, ok := p.seedFromPeers(); ok {
+		return p.joinViaDiscovery(seed)
+	}
+
 	// No peers (From given no arguments and no LIBETCD_PEERS — the env is unioned
 	// into p.peers in From) is a bootstrap, not a join: there is nothing to join,
 	// so start a fresh single-member cluster. Checked on the raw count —
@@ -176,6 +190,17 @@ func (p *peerJoiner) Join() (err error) {
 	if raceActive && bootstrap {
 		return p.Start()
 	}
+	return p.joinResolved(selfURLs, raceActive)
+}
+
+// joinResolved runs the join machinery — single-flight, member-add over the peer
+// transport, snapshot restore, promote — once the role decision is made (by the
+// uniform-config election or by discovery). It is the join half of Join; the
+// bootstrap half short-circuits to Start in Join above. selfURLs is this node's
+// advertised peer URLs; raceActive (uniform-config) drops self from the dial set
+// and dials only the canonical-lowest bootstrapper, and is false for discovery
+// (self isn't in the roster, so every roster entry is a real join target).
+func (p *peerJoiner) joinResolved(selfURLs []string, raceActive bool) (err error) {
 	if p.exhausted.Load() {
 		return errors.New("join: this handle's server was started and stopped by a failed join and cannot be reused — build a fresh From(...) handle and try again")
 	}
@@ -417,6 +442,161 @@ func (p *peerJoiner) Join() (err error) {
 
 	logger.Info("join: complete, voter caught up", zap.String("member-id", types.ID(memberID).String()))
 	return nil
+}
+
+// seed op timeouts: a short bound on the sniff probe (so a non-seed or
+// unreachable URL falls through fast) and a longer one on the discovery ops.
+// keepaliveInterval re-registers (and, for the bootstrapper, re-claims) well
+// within the seed's TTL so a live node's entries don't lapse.
+const (
+	seedProbeTimeout  = 3 * time.Second
+	seedOpTimeout     = 10 * time.Second
+	keepaliveInterval = 3 * time.Second
+)
+
+// joinBaseCtx returns the user context (or Background) without the join
+// deadline — used to bound the pre-join discovery probes and the keepalive.
+func (p *peerJoiner) joinBaseCtx() context.Context {
+	p.mu.Lock()
+	ctx := p.userCtx
+	p.mu.Unlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// seedFromPeers probes the single configured URL and returns it if it answers as
+// a discovery seed. Discovery is a single-endpoint affair — you point From at one
+// URL (a seed). A multi-URL set is a known peer list (a direct or uniform-config
+// join), never a seed, so sniffing is gated on exactly one peer: a normal
+// multi-peer join never pays the probe, and only a lone URL is checked. A miss
+// (not a seed, or unreachable) falls through to the plain-peer path.
+func (p *peerJoiner) seedFromPeers() (*discoverySeed, bool) {
+	if len(p.peers) != 1 {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(p.joinBaseCtx(), seedProbeTimeout)
+	defer cancel()
+	s, ok := probeSeed(ctx, p.peers[0], &http.Client{Timeout: seedProbeTimeout})
+	if !ok {
+		return nil, false
+	}
+	s.http = &http.Client{Timeout: seedOpTimeout} // ops get the longer bound
+	return s, true
+}
+
+// joinViaDiscovery resolves and joins (or bootstraps) the cluster through a
+// discovery seed: claim elects this node's role, it then bootstraps or joins the
+// roster peers, and finally registers itself as a live join target so later
+// nodes find it.
+func (p *peerJoiner) joinViaDiscovery(seed *discoverySeed) error {
+	ctx := p.joinBaseCtx()
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultJoinTimeout)
+		defer cancel()
+	}
+
+	p.mu.Lock()
+	token := p.cfg.InitialClusterToken
+	p.mu.Unlock()
+	if token == "" {
+		return errors.New("join: discovery requires a cluster token (JWT) — set WithClusterToken")
+	}
+	seed.token = token
+
+	won, err := seed.claim(ctx)
+	if err != nil {
+		return fmt.Errorf("join: discovery claim: %w", err)
+	}
+	if won {
+		// Bootstrap a fresh single-member cluster.
+		if err := p.Start(); err != nil {
+			return err
+		}
+	} else {
+		// Join: the roster gives the live peer set. self isn't in it (we register
+		// only after joining), so joinResolved runs an ordinary join against it.
+		peers, err := seed.rosterWait(ctx)
+		if err != nil {
+			return fmt.Errorf("join: discovery roster: %w", err)
+		}
+		p.peers = peers
+		if err := p.joinResolved(p.selfPeerURLs(), false); err != nil {
+			return err
+		}
+	}
+
+	// Advertise self so later arrivals discover this node — after it's up and
+	// serving the peer transport. The bootstrapper also holds its claim.
+	return p.registerWithSeed(seed, won)
+}
+
+// registerWithSeed advertises this node's peer URL to the seed and keeps it (and,
+// for the bootstrapper, its claim) fresh. The keepalives run on a context
+// cancelled by Stop (and by the user context), so they always halt when the node
+// shuts down.
+func (p *peerJoiner) registerWithSeed(seed *discoverySeed, bootstrap bool) error {
+	self := p.selfPeerURLs()
+	if len(self) == 0 {
+		return errors.New("join: discovery: no advertised peer URL to register (set WithPeerListener)")
+	}
+	url := self[0]
+
+	base := p.joinBaseCtx()
+	rctx, cancel := context.WithTimeout(base, seedOpTimeout)
+	defer cancel()
+	if err := seed.register(rctx, url, url); err != nil {
+		return fmt.Errorf("join: discovery register: %w", err)
+	}
+
+	// Cancellable so Stop halts the keepalives even with no user context set.
+	kaCtx, kaCancel := context.WithCancel(base)
+	p.mu.Lock()
+	p.keepaliveCancel = kaCancel
+	p.mu.Unlock()
+
+	// Roster keepalive: re-register within the TTL so a dead node's entry expires.
+	go keepalive(kaCtx, func(ctx context.Context) { _ = seed.register(ctx, url, url) })
+
+	// Claim keepalive (bootstrapper only): re-claim within the short claim TTL so
+	// a live winner holds it — a concurrent arrival can't double-bootstrap —
+	// while a winner that dies frees it promptly for a retry to re-win. The
+	// re-claim's won result is irrelevant; it only refreshes the TTL.
+	if bootstrap {
+		go keepalive(kaCtx, func(ctx context.Context) { _, _ = seed.claim(ctx) })
+	}
+	return nil
+}
+
+// keepalive calls fn every keepaliveInterval until ctx ends, each call bounded by
+// seedOpTimeout.
+func keepalive(ctx context.Context, fn func(context.Context)) {
+	t := time.NewTicker(keepaliveInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c, cancel := context.WithTimeout(ctx, seedOpTimeout)
+			fn(c)
+			cancel()
+		}
+	}
+}
+
+// Stop cancels the discovery keepalive (if running) and shuts the node down.
+func (p *peerJoiner) Stop() error {
+	p.mu.Lock()
+	cancel := p.keepaliveCancel
+	p.keepaliveCancel = nil
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return p.EtcdImpl.Stop()
 }
 
 // joinAddToAny POSTs the join resource to each peer in turn and returns the
