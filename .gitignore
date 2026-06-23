@@ -15,6 +15,10 @@ coverage.html
 /bin/
 /dist/
 
+# Command binaries — `go build .` inside a cmd dir emits one named after the
+# dir. Built into a container image (Dockerfile) or with -o, never committed.
+/cmd/disco/disco
+
 # Example binaries — `go build ./...` inside an example dir emits one named
 # after the dir. Built standalone in CI/e2e with -o, never committed.
 /examples/async-join/async-join
