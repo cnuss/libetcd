@@ -214,6 +214,45 @@ func TestSeedRejectsUnverified(t *testing.T) {
 	}
 }
 
+// TestDiscoveryDescriptor checks the sniff endpoint: unauthenticated, advertises
+// the endpoints, and only lists /token when the self-issuer is enabled.
+func TestDiscoveryDescriptor(t *testing.T) {
+	get := func(srv *Seed) descriptor {
+		t.Helper()
+		c := restful.NewContainer()
+		c.Add(srv.WebService())
+		ts := httptest.NewServer(c)
+		defer ts.Close()
+		r, _ := http.NewRequest(http.MethodGet, ts.URL+DiscoveryDescriptorPath, nil)
+		r.Header.Set("Accept", restful.MIME_JSON)
+		resp, body := do(t, r)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode, body)
+		}
+		var d descriptor
+		mustJSON(t, body, &d)
+		return d
+	}
+
+	// Without the self-issuer: endpoints present, no token.
+	d := get(New(&fakeStore{}))
+	if d.Discovery != discoveryVersion {
+		t.Fatalf("discovery=%q, want %q", d.Discovery, discoveryVersion)
+	}
+	if d.Claim != "/claim" || d.Register != "/register" || d.Roster != "/roster" {
+		t.Fatalf("endpoints wrong: %+v", d)
+	}
+	if d.Token != "" {
+		t.Fatalf("token advertised without self-issuer: %q", d.Token)
+	}
+
+	// With the self-issuer: token advertised.
+	t.Setenv("DISCO_ISSUER_URL", "https://disco.example")
+	if got := get(New(&fakeStore{}).WithSelfIssuer()).Token; got != "/token" {
+		t.Fatalf("token=%q, want /token", got)
+	}
+}
+
 func do(t *testing.T, r *http.Request) (*http.Response, string) {
 	t.Helper()
 	resp, err := http.DefaultClient.Do(r)
