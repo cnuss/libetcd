@@ -177,15 +177,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
-          # Sub-image of the repo so it doesn't collide with any library image.
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/disco
+          # Namespace disco by TAG, not by an extra path level: a /disco
+          # sub-image makes the mirrored ECR repo three levels deep
+          # (libetcd/disco), which trips up the deploy. Keep the bare repo image
+          # and prefix every tag with "disco-" instead.
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=disco-latest,enable={{is_default_branch}}
+            type=raw,value=disco-${{ github.sha }}
 
       - name: build and push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
@@ -208,7 +207,7 @@ jobs:
         with:
           cloud: aws
           compute: lambda
-          image: ${{ env.REGISTRY }}/${{ github.repository }}/disco:latest
+          image: ${{ env.REGISTRY }}/${{ github.repository }}:disco-latest
           memory: 512
           routes: ./cmd/disco/routes.yml
           secrets: ${{ toJSON(secrets) }}
