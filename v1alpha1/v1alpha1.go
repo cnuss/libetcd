@@ -29,6 +29,16 @@ import (
 	v1 "github.com/cnuss/libetcd/v1"
 )
 
+// Prefer Go's built-in DNS resolver over the platform's cgo resolver for every
+// lookup in this process (peer dials, the join client, etcd's own resolution).
+// On macOS the cgo resolver goes through mDNSResponder, which negative-caches an
+// NXDOMAIN — so a peer/tunnel hostname that hasn't propagated yet stays "no such
+// host" past the join budget. The pure-Go resolver re-queries each lookup, so a
+// joiner sees the name resolve the moment DNS propagates (issue #116).
+func init() {
+	net.DefaultResolver.PreferGo = true
+}
+
 // EtcdImpl implements the full Etcd surface (Server + Client + Builder + Executor).
 var _ v1.Etcd = (*EtcdImpl)(nil)
 
