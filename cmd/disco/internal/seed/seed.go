@@ -7,20 +7,31 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	restful "github.com/emicklei/go-restful/v3"
 
+	"github.com/cnuss/libetcd/cmd/disco/internal/issuer"
 	"github.com/cnuss/libetcd/cmd/disco/internal/store"
+)
+
+// Defaults for the self-issuer (overridable via env in WithSelfIssuer).
+const (
+	defaultIssuerURL = "https://disco.nuss.io"
+	tokenTTL         = time.Hour
 )
 
 // Seed is the discovery rendezvous service — a stateless shim over a Store.
 type Seed struct {
 	store   store.Store
-	issuers []string // OIDC issuers to trust for cluster JWTs
+	issuers []string       // OIDC issuers to trust for cluster JWTs
+	issuer  *issuer.Issuer // optional self-issuer: mints + publishes disco-native tokens
 
 	mu        sync.Mutex
 	verifiers []*oidc.IDTokenVerifier // one per issuer, built lazily from OIDC discovery
@@ -31,6 +42,35 @@ func New(s store.Store) *Seed { return &Seed{store: s, issuers: make([]string, 0
 
 func (s *Seed) WithIssuer(iss string) *Seed {
 	s.issuers = append(s.issuers, iss)
+	return s
+}
+
+// WithSelfIssuer makes the seed its own OIDC issuer: it serves /token,
+// /.well-known/openid-configuration and the JWKS, and trusts itself when
+// verifying (so disco-minted tokens are accepted alongside external ones).
+//
+// Configured from the environment: DISCO_SIGNING_KEY (PEM; an ephemeral key is
+// generated with a warning if unset) and DISCO_ISSUER_URL (defaults to
+// https://disco.nuss.io). A bad signing key is fatal — misconfiguration should
+// stop startup, not silently disable auth.
+func (s *Seed) WithSelfIssuer() *Seed {
+	key, ephemeral, err := issuer.KeyFromEnv()
+	if err != nil {
+		log.Fatalf("disco: signing key: %v", err)
+	}
+	if ephemeral {
+		log.Print("disco: WARNING self-issuer signing key is ephemeral — set DISCO_SIGNING_KEY (PEM) for tokens that survive restarts and scale-out")
+	}
+	issURL := os.Getenv("DISCO_ISSUER_URL")
+	if issURL == "" {
+		issURL = defaultIssuerURL
+	}
+	iss, err := issuer.New(issURL, key, tokenTTL)
+	if err != nil {
+		log.Fatalf("disco: issuer: %v", err)
+	}
+	s.issuer = iss
+	s.issuers = append(s.issuers, iss.URL())
 	return s
 }
 
@@ -49,6 +89,15 @@ func (s *Seed) WebService() *restful.WebService {
 	ws.Route(ws.POST("/claim").Filter(s.verify).To(s.handleClaim))
 	ws.Route(ws.POST("/register").Filter(s.verify).To(s.handleRegister))
 	ws.Route(ws.GET("/roster").Filter(s.verify).To(s.handleRoster))
+
+	// Self-issuer (optional): mint a disco-native identity and publish the
+	// discovery + JWKS that verify it. Unauthenticated by design — /token hands
+	// out a fresh, isolated cluster namespace.
+	if s.issuer != nil {
+		ws.Route(ws.POST("/token").To(s.handleToken))
+		ws.Route(ws.GET(issuer.DiscoveryPath).To(s.handleDiscovery))
+		ws.Route(ws.GET(issuer.JWKSPath).To(s.handleJWKS))
+	}
 	return ws
 }
 
@@ -63,6 +112,7 @@ var (
 	errClaimHeld  = errors.New("claim already held")
 	errMissingURL = errors.New("missing url")
 	errStore      = errors.New("store error")
+	errMint       = errors.New("token minting failed")
 )
 
 // verify is the JWT gate (issue #108: seed-side verification). The node carries
@@ -201,6 +251,34 @@ func (s *Seed) handleHealth(_ *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(message{Message: "ok"})
 }
 
+// handleToken mints a fresh disco-native identity and returns a signed token for
+// it. Unauthenticated: each call yields a new random sub (an isolated cluster
+// namespace), so handing it out freely only lets a caller form/join its own
+// cluster. Share the returned token across the nodes of one cluster.
+func (s *Seed) handleToken(_ *restful.Request, resp *restful.Response) {
+	sub, err := issuer.NewRandomSub()
+	if err != nil {
+		_ = resp.WriteError(http.StatusInternalServerError, errMint)
+		return
+	}
+	token, expiresIn, err := s.issuer.Mint(sub)
+	if err != nil {
+		_ = resp.WriteError(http.StatusInternalServerError, errMint)
+		return
+	}
+	_ = resp.WriteAsJson(tokenResponse{Token: token, Sub: sub, ExpiresIn: expiresIn})
+}
+
+// handleDiscovery serves the issuer's OpenID Provider configuration.
+func (s *Seed) handleDiscovery(_ *restful.Request, resp *restful.Response) {
+	_ = resp.WriteAsJson(s.issuer.Discovery())
+}
+
+// handleJWKS serves the issuer's public verification keys.
+func (s *Seed) handleJWKS(_ *restful.Request, resp *restful.Response) {
+	_ = resp.WriteAsJson(s.issuer.JWKS())
+}
+
 // writeStoreError maps a Store error to a status: scaffold stubs surface as 501,
 // anything else as a 502 (the seed's backing failed).
 func writeStoreError(resp *restful.Response, err error) {
@@ -226,5 +304,10 @@ type (
 	}
 	claimResponse struct {
 		Won bool `json:"won"`
+	}
+	tokenResponse struct {
+		Token     string `json:"token"`
+		Sub       string `json:"sub"`
+		ExpiresIn int    `json:"expires_in"`
 	}
 )

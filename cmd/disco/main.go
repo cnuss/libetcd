@@ -47,7 +47,11 @@ func main() {
 		log.Fatalf("disco: store init: %v", err)
 	}
 
-	srv := seed.New(backing).WithIssuer("https://token.actions.githubusercontent.com")
+	// Trust GitHub Actions OIDC, and act as our own issuer (POST /token + JWKS)
+	// for callers without an external IdP.
+	srv := seed.New(backing).
+		WithIssuer("https://token.actions.githubusercontent.com").
+		WithSelfIssuer()
 	defer srv.Close()
 
 	container := restful.NewContainer()
