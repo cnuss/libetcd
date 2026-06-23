@@ -50,17 +50,23 @@ import (
 	"github.com/cnuss/libetcd/cmd/disco/internal/store"
 )
 
-// entryTTL is the lifetime stamped on claim and roster keys. Clients refresh
-// well within it (TTL 10s / keepalive 3s); a member that stops
-// refreshing is pruned.
-const entryTTL = 10 * time.Second
+// claimTTL is short so a bootstrapper that dies (stops re-claiming) frees the
+// claim quickly for a retry to re-win, while a live bootstrapper keepalives
+// within it so a concurrent arrival can't double-bootstrap. rosterTTL governs
+// join-target liveness — a member that stops re-registering is pruned. Both must
+// exceed the client keepalive interval (3s).
+const (
+	claimTTL  = 6 * time.Second
+	rosterTTL = 10 * time.Second
+)
 
 // client is the kvdb.io-backed store.Store.
 type client struct {
-	base   string        // https://kvdb.io/<bucket>
-	secret string        // kvdb secret_key (HTTP Basic username, empty password)
-	ttl    time.Duration // entry lifetime; clients keepalive within it
-	http   *http.Client
+	base      string        // https://kvdb.io/<bucket>
+	secret    string        // kvdb secret_key (HTTP Basic username, empty password)
+	claimTTL  time.Duration // claim key lifetime (short; bootstrapper re-claims within it)
+	rosterTTL time.Duration // roster entry lifetime (member liveness)
+	http      *http.Client
 }
 
 // New reads the bucket + secret_key from the environment and returns a
@@ -73,10 +79,11 @@ func New() (store.Store, error) {
 		return nil, fmt.Errorf("kvdb: DISCO_KVDB_BUCKET and DISCO_KVDB_SECRET are required")
 	}
 	return &client{
-		base:   "https://kvdb.io/" + bucket,
-		secret: secret,
-		ttl:    entryTTL,
-		http:   http.DefaultClient,
+		base:      "https://kvdb.io/" + bucket,
+		secret:    secret,
+		claimTTL:  claimTTL,
+		rosterTTL: rosterTTL,
+		http:      http.DefaultClient,
 	}, nil
 }
 
@@ -86,7 +93,7 @@ func New() (store.Store, error) {
 // that dies before the cluster forms (the key expires and a later arrival can
 // re-win).
 func (c *client) Claim(ctx context.Context, sub string) (bool, error) {
-	resp, err := c.do(ctx, http.MethodPatch, "/c/"+seg(sub), c.ttlQuery(), strings.NewReader("+1"))
+	resp, err := c.do(ctx, http.MethodPatch, "/c/"+seg(sub), ttlQuery(c.claimTTL), strings.NewReader("+1"))
 	if err != nil {
 		return false, err
 	}
@@ -105,7 +112,7 @@ func (c *client) Claim(ctx context.Context, sub string) (bool, error) {
 // Register does PUT r/<sub>/<id>=url with ?ttl. Idempotent: re-calling with the
 // same id overwrites in place and refreshes the TTL (keepalive-as-re-register).
 func (c *client) Register(ctx context.Context, sub, id, url string) error {
-	resp, err := c.do(ctx, http.MethodPut, "/r/"+seg(sub)+"/"+seg(id), c.ttlQuery(), strings.NewReader(url))
+	resp, err := c.do(ctx, http.MethodPut, "/r/"+seg(sub)+"/"+seg(id), ttlQuery(c.rosterTTL), strings.NewReader(url))
 	if err != nil {
 		return err
 	}
@@ -164,9 +171,9 @@ func (c *client) do(ctx context.Context, method, path, rawQuery string, body io.
 	return c.http.Do(req)
 }
 
-// ttlQuery is the ?ttl=N stamped on claim and roster writes.
-func (c *client) ttlQuery() string {
-	return "ttl=" + strconv.Itoa(int(c.ttl.Seconds()))
+// ttlQuery is the ?ttl=N (seconds) stamped on a claim or roster write.
+func ttlQuery(d time.Duration) string {
+	return "ttl=" + strconv.Itoa(int(d.Seconds()))
 }
 
 // seg hashes a value into a path-safe key segment (a JWT sub or node id may hold
