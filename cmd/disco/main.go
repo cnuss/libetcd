@@ -47,7 +47,7 @@ func main() {
 		log.Fatalf("disco: store init: %v", err)
 	}
 
-	srv := seed.New(backing)
+	srv := seed.New(backing).WithIssuer("https://token.actions.githubusercontent.com")
 	defer srv.Close()
 
 	container := restful.NewContainer()
