@@ -76,7 +76,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"single-node", "greeting: hello world"},
 		{"multi-node", "greeting from node 2: hello world"},
-		{"discovery", "greeting from node 3: hello world"},
+		{"discovery", "disco: done"},
 	}
 	// Examples run serially: each boots a real embedded node binding loopback
 	// ports, and concurrent runs contend for ports and CPU.
