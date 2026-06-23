@@ -124,7 +124,9 @@ jobs:
         env:
           LIBETCD_E2E: ${{ (matrix.go == 'stable' && (matrix.os == 'ubuntu-24.04' || matrix.os == 'windows-2025' || matrix.os == 'macos-26')) && '1' || '0' }}
         working-directory: e2e
-        run: go test -count=1 -v ./...
+        # -parallel 1: e2e tests each boot real nodes binding loopback ports;
+        # never run them concurrently (they'd contend for ports and CPU).
+        run: go test -count=1 -parallel 1 -v ./...
 
   # Build, publish, and deploy the discovery seed (cmd/disco) — a standalone
   # container fronted by rowdy as the Lambda behind libetcd.nuss.io. Kept

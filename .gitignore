@@ -21,15 +21,9 @@ coverage.html
 
 # Example binaries — `go build ./...` inside an example dir emits one named
 # after the dir. Built standalone in CI/e2e with -o, never committed.
-/examples/async-join/async-join
-/examples/dir-handoff/dir-handoff
 /examples/discovery/discovery
-/examples/headless-leader/headless-leader
-/examples/load-join/load-join
 /examples/multi-node/multi-node
-/examples/restart-cycle/restart-cycle
 /examples/single-node/single-node
-/examples/with-tunnel/with-tunnel
 /build/
 
 # go.work is committed deliberately: the library + every standalone example

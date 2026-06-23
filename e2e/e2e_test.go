@@ -76,12 +76,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"single-node", "greeting: hello world"},
 		{"multi-node", "greeting from node 2: hello world"},
-		{"async-join", "all 3 puts survived"},
-		{"load-join", "load-join success: verified"},
-		{"dir-handoff", "dir-handoff success: verified 16/16 keys"},
-		{"restart-cycle", "restart-cycle success: verified 24 keys on 2 members across 2 restart cycles"},
-		{"headless-leader", "headless-leader success: verified 3 voters, 1 headless"},
-		{"with-tunnel", "with-tunnel success:"},
+		{"discovery", "disco: done"},
 	}
 	// Examples run serially: each boots a real embedded node binding loopback
 	// ports, and concurrent runs contend for ports and CPU.
@@ -92,12 +87,12 @@ func TestExamples(t *testing.T) {
 	}
 }
 
-// gateE2E skips the whole e2e suite on CI cells not chosen to run it. Each
-// example boots real etcd nodes (with-tunnel also dials real Cloudflare
-// tunnels), so CI runs the suite on just a few variants (the workflow sets
-// LIBETCD_E2E=1 there) rather than all matrix cells; the examples are still
-// built on every cell by a separate CI step. Outside CI (CI unset) the suite
-// always runs, so `make e2e` covers it locally.
+// gateE2E skips the whole e2e suite on CI cells not chosen to run it. Each test
+// boots real etcd nodes (the tunnel tests also dial real Cloudflare tunnels), so
+// CI runs the suite on just a few variants (the workflow sets LIBETCD_E2E=1
+// there) rather than all matrix cells; the examples are still built on every
+// cell by a separate CI step. Outside CI (CI unset) the suite always runs, so
+// `make e2e` covers it locally.
 func gateE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CI") == "true" && os.Getenv("LIBETCD_E2E") != "1" {

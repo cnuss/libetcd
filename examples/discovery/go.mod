@@ -2,7 +2,10 @@ module github.com/cnuss/libetcd/examples/discovery
 
 go 1.26
 
-require github.com/cnuss/libetcd v0.0.0
+require (
+	github.com/cnuss/libetcd v0.0.0
+	go.etcd.io/etcd/client/v3 v3.6.12
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -38,7 +41,6 @@ require (
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.12 // indirect
-	go.etcd.io/etcd/client/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/pkg/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/server/v3 v3.6.12 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect

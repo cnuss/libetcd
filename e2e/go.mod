@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/cnuss/libetcd v0.0.0
 	github.com/cnuss/libtunnel v0.0.19
+	go.etcd.io/etcd/client/v3 v3.6.12
 )
 
 require (
@@ -74,7 +75,6 @@ require (
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.etcd.io/etcd/api/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.12 // indirect
-	go.etcd.io/etcd/client/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/pkg/v3 v3.6.12 // indirect
 	go.etcd.io/etcd/server/v3 v3.6.12 // indirect
 	go.etcd.io/raft/v3 v3.6.0 // indirect

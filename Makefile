@@ -1,8 +1,9 @@
 .PHONY: all check fmt fmt-check vet build windows test e2e run
 
 # The library and its deps are pure Go; build everything cgo-free, matching CI
-# (workflow env CGO_ENABLED=0). This also keeps the cgo-heavy with-tunnel deps
-# (cloudflared) building pure-Go on platforms with no working cgo toolchain.
+# (workflow env CGO_ENABLED=0). This also keeps the cgo-heavy libtunnel deps
+# (cloudflared) in the e2e module building pure-Go on platforms with no working
+# cgo toolchain.
 export CGO_ENABLED := 0
 
 # Default: everything CI runs except the auto-bump release step.
@@ -44,11 +45,11 @@ test:
 # otherwise pick up example source changes. e2e is its own module (it imports
 # libtunnel, which the library module must not), so run it from its own dir.
 e2e:
-	cd e2e && go test -count=1 -v ./...
+	cd e2e && go test -count=1 -parallel 1 -v ./...
 
 # Run an example by name, forwarding any trailing words as args:
 #   make run single-node
-#   make run with-tunnel
+#   make run discovery
 # Each example is its own module (own go.mod + replace ../..). Build it
 # standalone (GOWORK=off, ignoring the dev go.work) to its own dir, then run
 # the binary — the same build the e2e harness and CI do, so `make run` proves

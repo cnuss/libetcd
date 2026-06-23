@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/cnuss/libetcd"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func main() {
@@ -32,26 +33,43 @@ func main() {
 	token := tok["token"].(string)
 
 	// Three identical calls — the seed elects one to bootstrap, the rest join.
+	log.Printf("joining e1 using disco.nuss.io")
 	e1 := libetcd.From("https://disco.nuss.io").WithClusterToken(token).WithContext(ctx)
 	if err := e1.Join(); err != nil {
 		log.Fatal(err)
 	}
+	e1.Self().Put(ctx, "e1", fmt.Sprintf("hello from %v", e1.Peers()))
+
+	log.Printf("joining e2 using disco.nuss.io")
 	e2 := libetcd.From("https://disco.nuss.io").WithClusterToken(token).WithContext(ctx)
 	if err := e2.Join(); err != nil {
 		log.Fatal(err)
 	}
+	e2.Self().Put(ctx, "e2", fmt.Sprintf("hello from %v", e2.Peers()))
+
+	log.Printf("joining e3 using disco.nuss.io")
 	e3 := libetcd.From("https://disco.nuss.io").WithClusterToken(token).WithContext(ctx)
 	if err := e3.Join(); err != nil {
 		log.Fatal(err)
 	}
+	e3.Self().Put(ctx, "e3", fmt.Sprintf("hello from %v", e3.Peers()))
 
-	// Write on one node, read it back from another — replication works.
-	if _, err := e1.Self().Put(ctx, "greeting", "hello world"); err != nil {
-		log.Fatal(err)
-	}
-	got, err := e3.Self().Get(ctx, "greeting")
+	members, err := e1.Client().MemberList(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("greeting from node 3: %s\n", got.Kvs[0].Value)
+	fmt.Printf("members:\n")
+	for _, m := range members.Members {
+		fmt.Printf("  %16x  %-12s learner=%-5v  peers=%v\n", m.ID, m.Name, m.IsLearner, m.PeerURLs)
+	}
+
+	kvs, err := e1.Client().Get(ctx, "", clientv3.WithPrefix())
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("kvs:\n")
+	for _, kv := range kvs.Kvs {
+		fmt.Printf("  %q = %q\n", kv.Key, kv.Value)
+	}
+	log.Printf("disco: done")
 }
