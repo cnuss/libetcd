@@ -171,6 +171,28 @@ func TestSeedVerifiedRequests(t *testing.T) {
 		}
 	})
 
+	// userinfo -> 200 with the full verified JWT payload (sub, iss, aud, ...) —
+	// the hook a joining node's /join handler uses to verify a JWT and read its
+	// claims without crypto. It touches no store op, so fs.subs is unaffected.
+	t.Run("userinfo", func(t *testing.T) {
+		resp, body := do(t, req(http.MethodGet, "/userinfo", ""))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode, body)
+		}
+		var got map[string]any
+		mustJSON(t, body, &got)
+		if got["sub"] != sub {
+			t.Fatalf("userinfo sub=%v, want %q", got["sub"], sub)
+		}
+		if got["iss"] != iss.URL {
+			t.Fatalf("userinfo iss=%v, want %q", got["iss"], iss.URL)
+		}
+		// aud is part of the payload too — proves the full claim set, not just sub.
+		if got["aud"] == nil {
+			t.Fatalf("userinfo missing aud; payload=%v", got)
+		}
+	})
+
 	// Every store op ran under the verified subject.
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -242,6 +264,9 @@ func TestDiscoveryDescriptor(t *testing.T) {
 	if d.Claim != "/claim" || d.Register != "/register" || d.Roster != "/roster" {
 		t.Fatalf("endpoints wrong: %+v", d)
 	}
+	if d.Userinfo != "/userinfo" {
+		t.Fatalf("userinfo=%q, want /userinfo", d.Userinfo)
+	}
 	if d.Token != "" {
 		t.Fatalf("token advertised without self-issuer: %q", d.Token)
 	}
@@ -310,8 +335,9 @@ func TestSelfIssuer(t *testing.T) {
 			t.Fatalf("discovery status %d: %s", resp.StatusCode, body)
 		}
 		var d struct {
-			Issuer  string `json:"issuer"`
-			JWKSURI string `json:"jwks_uri"`
+			Issuer   string `json:"issuer"`
+			JWKSURI  string `json:"jwks_uri"`
+			UserInfo string `json:"userinfo_endpoint"`
 		}
 		mustJSON(t, body, &d)
 		if d.Issuer != url {
@@ -319,6 +345,9 @@ func TestSelfIssuer(t *testing.T) {
 		}
 		if d.JWKSURI != url+issuer.JWKSPath {
 			t.Fatalf("discovery jwks_uri=%q, want %q", d.JWKSURI, url+issuer.JWKSPath)
+		}
+		if d.UserInfo != url+"/userinfo" {
+			t.Fatalf("discovery userinfo_endpoint=%q, want %q", d.UserInfo, url+"/userinfo")
 		}
 	}
 

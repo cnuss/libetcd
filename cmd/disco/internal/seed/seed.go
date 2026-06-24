@@ -97,6 +97,11 @@ func (s *Seed) WebService() *restful.WebService {
 	ws.Route(ws.POST("/register").Filter(s.verify).To(s.handleRegister))
 	ws.Route(ws.GET("/roster").Filter(s.verify).To(s.handleRoster))
 
+	// userinfo verifies a bearer and returns its claims (standard OIDC UserInfo
+	// shape). A joining node's /join handler forwards an incoming JWT here to
+	// verify it and read its sub, so libetcd itself stays crypto-free.
+	ws.Route(ws.GET(userinfoPath).Filter(s.verify).To(s.handleUserinfo))
+
 	// Self-issuer (optional): mint a disco-native identity and publish the
 	// discovery + JWKS that verify it. Unauthenticated by design — /token hands
 	// out a fresh, isolated cluster namespace. It takes no body, so accept either
@@ -111,9 +116,10 @@ func (s *Seed) WebService() *restful.WebService {
 	return ws
 }
 
-// subAttr is the request attribute the verify filter sets and handlers read:
-// the cluster identity extracted from the JWT sub claim.
-const subAttr = "sub"
+// claimsAttr is the request attribute the verify filter sets and handlers read:
+// the full verified JWT payload. The cluster identity is its sub claim — see
+// the sub helper — so there's no separate sub attribute.
+const claimsAttr = "claims"
 
 // DiscoveryDescriptorPath is the unauthenticated sniff endpoint; a client probes
 // <url>/.well-known/libetcd-discovery to decide whether a From URL is a seed.
@@ -121,6 +127,13 @@ const DiscoveryDescriptorPath = "/.well-known/libetcd-discovery"
 
 // discoveryVersion is the descriptor's protocol version.
 const discoveryVersion = "v1"
+
+// userinfoPath is the OIDC-style UserInfo endpoint: an authenticated GET that
+// returns the verified caller's claims (sub required). Served for every trusted
+// issuer's tokens — not just the self-issuer's — and advertised both in the
+// discovery descriptor and, when the self-issuer is on, as the OIDC
+// userinfo_endpoint.
+const userinfoPath = "/userinfo"
 
 var (
 	errNoBearer   = errors.New("missing bearer token")
@@ -175,7 +188,16 @@ func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restf
 		return
 	}
 
-	req.SetAttribute(subAttr, tok.Subject)
+	// Stash the full verified claim set; sub is one of its claims (the sub
+	// helper reads it), and /userinfo echoes the whole payload — a joining node
+	// forwards its token here to learn its identity without re-parsing.
+	var cl map[string]any
+	if err := tok.Claims(&cl); err != nil {
+		_ = resp.WriteError(http.StatusUnauthorized, fmt.Errorf("jwt claims: %w", err))
+		return
+	}
+
+	req.SetAttribute(claimsAttr, cl)
 	chain.ProcessFilter(req, resp)
 }
 
@@ -215,9 +237,17 @@ func bearerToken(req *restful.Request) string {
 	return ""
 }
 
-// sub returns the verified cluster identity the verify filter stashed.
+// claims returns the full verified JWT payload the verify filter stashed.
+func claims(req *restful.Request) map[string]any {
+	c, _ := req.Attribute(claimsAttr).(map[string]any)
+	return c
+}
+
+// sub returns the verified cluster identity — the sub claim of the stashed
+// payload. The verify filter rejects a token without one, so a request that
+// reached a handler always has it.
 func sub(req *restful.Request) string {
-	s, _ := req.Attribute(subAttr).(string)
+	s, _ := claims(req)["sub"].(string)
 	return s
 }
 
@@ -275,6 +305,7 @@ func (s *Seed) handleHealth(_ *restful.Request, resp *restful.Response) {
 func (s *Seed) handleDescriptor(_ *restful.Request, resp *restful.Response) {
 	d := descriptor{
 		Discovery: discoveryVersion,
+		Userinfo:  userinfoPath,
 		Claim:     "/claim",
 		Register:  "/register",
 		Roster:    "/roster",
@@ -283,6 +314,15 @@ func (s *Seed) handleDescriptor(_ *restful.Request, resp *restful.Response) {
 		d.Token = "/token"
 	}
 	_ = resp.WriteAsJson(d)
+}
+
+// handleUserinfo is the OIDC UserInfo endpoint: the verify filter has already
+// authenticated the bearer, so this returns its verified claim set as a JSON
+// object with sub required (the standard UserInfo response). A joining node's
+// /join handler forwards an incoming join JWT here to verify it and read back
+// sub — the cluster identity it matches against — without doing crypto itself.
+func (s *Seed) handleUserinfo(req *restful.Request, resp *restful.Response) {
+	_ = resp.WriteAsJson(claims(req))
 }
 
 // handleToken mints a fresh disco-native identity and returns a signed token for
@@ -303,9 +343,13 @@ func (s *Seed) handleToken(_ *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(tokenResponse{Token: token, Sub: sub, ExpiresIn: expiresIn})
 }
 
-// handleDiscovery serves the issuer's OpenID Provider configuration.
+// handleDiscovery serves the issuer's OpenID Provider configuration, augmented
+// with the seed's userinfo_endpoint so disco advertises a conformant OIDC
+// UserInfo endpoint (the path is the seed's, built on the issuer's URL).
 func (s *Seed) handleDiscovery(_ *restful.Request, resp *restful.Response) {
-	_ = resp.WriteAsJson(s.issuer.Discovery())
+	d := s.issuer.Discovery()
+	d["userinfo_endpoint"] = s.issuer.URL() + userinfoPath
+	_ = resp.WriteAsJson(d)
 }
 
 // handleJWKS serves the issuer's public verification keys.
@@ -348,6 +392,7 @@ type (
 	descriptor struct {
 		Discovery string `json:"discovery"` // protocol version, e.g. "v1"
 		Token     string `json:"token,omitempty"`
+		Userinfo  string `json:"userinfo"`
 		Claim     string `json:"claim"`
 		Register  string `json:"register"`
 		Roster    string `json:"roster"`
