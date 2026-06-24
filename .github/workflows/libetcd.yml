@@ -1,4 +1,4 @@
-name: CI
+name: libetcd
 
 on:
   push:
@@ -28,7 +28,39 @@ env:
   CGO_ENABLED: "0"
 
 jobs:
+  # Cheap gate: read the real HEAD commit message (the PR's tip, not the
+  # checkout merge commit) and skip the matrix when it carries [skip-libetcd].
+  # This is a JOB-level skip, not a workflow-level paths/message filter: a
+  # skipped required job reports "skipped" (counted as success by branch
+  # protection), whereas a workflow that never runs leaves its required checks
+  # pending and blocks the PR. Keep the disco side independent — disco.yml has
+  # its own [skip-disco] guard.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # On a PR, github.sha is the merge commit; check the PR's own tip.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - id: check
+        shell: bash
+        run: |
+          # The token must sit alone on its own line so prose mentioning it
+          # inline (a commit body, a doc paragraph) doesn't accidentally skip
+          # CI — same anchoring the release job uses for [skip release].
+          msg=$(git log -1 --pretty=%B)
+          if grep -qE '^[[:space:]]*\[skip-libetcd\][[:space:]]*$' <<<"$msg"; then
+            echo "::notice::[skip-libetcd] — skipping libetcd CI"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   libetcd:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -128,97 +160,32 @@ jobs:
         # never run them concurrently (they'd contend for ports and CPU).
         run: go test -count=1 -parallel 1 -v ./...
 
-  # Build, publish, and deploy the discovery seed (cmd/disco) — a standalone
-  # container fronted by rowdy as the Lambda behind libetcd.nuss.io. Kept
-  # independent of the libetcd matrix above (cmd/disco is its own module and
-  # imports none of the library), so a tunnel/e2e flake never blocks a seed
-  # deploy, and the seed ships on its own cadence. Build-only on PRs; push +
-  # deploy on main / tags. Pinned action SHAs match the rest of this workflow.
-  disco:
+  # Aggregator: the single required status check. Succeeds when the matrix
+  # passed or was legitimately skipped ([skip-libetcd]); fails if any cell
+  # failed. Branch protection requires THIS one context instead of the per-cell
+  # `libetcd (os, go)` checks — a job-level skip reports those cells as nothing
+  # (the matrix doesn't expand when skipped), which would leave required cells
+  # pending and block the PR. This job runs always(), so a skip still reports a
+  # green required check.
+  libetcd-ci:
+    needs: [guard, libetcd]
+    if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write   # push the image to GHCR
-      id-token: write   # OIDC: GHCR login + rowdy's AWS role assumption
-    env:
-      REGISTRY: ghcr.io
-      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-    defaults:
-      run:
-        working-directory: cmd/disco
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version: stable
-          cache: true
-          # setup-go runs at the repo root; point it at this module's go.sum.
-          cache-dependency-path: cmd/disco/go.sum
-
-      # Fast Go gate before the slower image build (the Dockerfile compiles, but
-      # doesn't vet). GOWORK=off (workflow env) resolves the module on its own.
-      - name: go vet
-        run: go vet ./...
-
-      - name: go build
-        run: go build ./...
-
-      # Hermetic tests (mock OIDC issuer for JWT verify). The kvdb live test
-      # skips without DISCO_KVDB_* env, which isn't set here, so nothing reaches
-      # out to kvdb.io.
-      - name: go test
-        run: go test ./...
-
-      - name: set up docker buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
-
-      - name: log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: extract metadata
-        id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
-        with:
-          # Namespace disco by TAG, not by an extra path level: a /disco
-          # sub-image makes the mirrored ECR repo three levels deep
-          # (libetcd/disco), which trips up the deploy. Keep the bare repo image
-          # and prefix every tag with "disco-" instead.
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-          tags: |
-            type=raw,value=disco-latest,enable={{is_default_branch}}
-            type=raw,value=disco-${{ github.sha }}
-
-      - name: build and push
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
-        with:
-          # context is workspace-relative (working-directory affects run steps
-          # only); the Dockerfile lives at cmd/disco/Dockerfile.
-          context: cmd/disco
-          platforms: linux/amd64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: deploy to AWS Lambda
-        if: github.event_name != 'pull_request'
-        # Pinned to the tip of rowdy's floating `github` dist branch; re-pin to
-        # pull in rowdy updates.
-        uses: scaffoldly/rowdy@47a1b6d25a4187ba3ff998c15ebec79b86e9be5c # github
-        with:
-          cloud: aws
-          compute: lambda
-          image: ${{ env.REGISTRY }}/${{ github.repository }}:disco-latest
-          memory: 512
-          routes: ./cmd/disco/routes.yml
-          secrets: ${{ toJSON(secrets) }}
+      - name: verdict
+        run: |
+          guard='${{ needs.guard.result }}'
+          matrix='${{ needs.libetcd.result }}'
+          echo "guard=$guard libetcd=$matrix"
+          if [ "$guard" != "success" ]; then
+            echo "::error::guard job result=$guard"; exit 1
+          fi
+          # The matrix result is success only if every cell passed; skipped when
+          # [skip-libetcd] opted out. Anything else (failure/cancelled) blocks.
+          case "$matrix" in
+            success|skipped) exit 0 ;;
+            *) echo "::error::libetcd matrix result=$matrix"; exit 1 ;;
+          esac
 
   release:
     needs: [libetcd]
