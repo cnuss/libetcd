@@ -2,6 +2,7 @@ package join_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -85,6 +86,69 @@ func TestAuthAndDispatch(t *testing.T) {
 			t.Fatalf("status = %d, want 405", resp.StatusCode)
 		}
 	})
+}
+
+// TestAuthViaUserinfo covers JWT mode: with Userinfo set, the credential is a
+// JWT the server forwards to the seed's userinfo endpoint; the join is allowed
+// only when the verified sub equals Token (the cluster's sub). A mock userinfo
+// stands in for the seed — it maps known bearers to subs and 401s the rest.
+func TestAuthViaUserinfo(t *testing.T) {
+	const clusterSub = "repo:cnuss/libetcd:ref:refs/heads/main"
+	// Distinct JWTs, only the first under the cluster's sub — the #122 case:
+	// co-runners share a sub but each carries its own token.
+	tokens := map[string]string{"jwt-A": clusterSub, "jwt-B": "other-sub"}
+
+	userinfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		sub, ok := tokens[raw]
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Full payload (sub among other claims), like the live seed.
+		_ = json.NewEncoder(w).Encode(map[string]any{"sub": sub, "iss": "mock", "aud": "disco"})
+	}))
+	t.Cleanup(userinfo.Close)
+
+	srv := &join.Server{
+		Self:     func() *clientv3.Client { return nil },
+		Token:    clusterSub,
+		Userinfo: userinfo.URL,
+		Acquire:  noopAcquire,
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	post := func(cred string) int {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+join.Path,
+			strings.NewReader("peerURLs=http://127.0.0.1:32380"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set(join.TokenHeader, cred)
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// Valid JWT whose sub matches the cluster: passes auth, then hits the nil
+	// client (503) — proving it got past the userinfo gate.
+	if got := post("jwt-A"); got != http.StatusServiceUnavailable {
+		t.Fatalf("matching-sub JWT: status = %d, want 503", got)
+	}
+	// Valid JWT under a different sub: forbidden.
+	if got := post("jwt-B"); got != http.StatusForbidden {
+		t.Fatalf("wrong-sub JWT: status = %d, want 403", got)
+	}
+	// Unknown token (userinfo 401): forbidden, fail-closed.
+	if got := post("forged"); got != http.StatusForbidden {
+		t.Fatalf("forged token: status = %d, want 403", got)
+	}
+	// Missing credential: forbidden without even calling userinfo.
+	if got := post(""); got != http.StatusForbidden {
+		t.Fatalf("missing token: status = %d, want 403", got)
+	}
 }
 
 // TestRoundTrip drives the protocol against a real single node: Add registers a

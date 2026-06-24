@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const validDescriptorJSON = `{"discovery":"v1","token":"/token","claim":"/claim","register":"/register","roster":"/roster"}`
+const validDescriptorJSON = `{"discovery":"v1","token":"/token","userinfo":"/userinfo","claim":"/claim","register":"/register","roster":"/roster"}`
 
 // TestProbeSeed: a valid descriptor is recognized; everything else falls through
 // as "not a seed".
@@ -22,11 +22,12 @@ func TestProbeSeed(t *testing.T) {
 		want bool
 	}{
 		{"valid", 200, validDescriptorJSON, true},
-		{"valid without token", 200, `{"discovery":"v1","claim":"/c","register":"/r","roster":"/ro"}`, true},
+		{"valid without token", 200, `{"discovery":"v1","userinfo":"/u","claim":"/c","register":"/r","roster":"/ro"}`, true},
 		{"not found", 404, "", false},
 		{"server error", 500, "", false},
 		{"junk json", 200, "not json", false},
 		{"missing fields", 200, `{"discovery":"v1"}`, false},
+		{"missing userinfo", 200, `{"discovery":"v1","claim":"/c","register":"/r","roster":"/ro"}`, false},
 		{"empty version", 200, `{"discovery":"","claim":"/c","register":"/r","roster":"/ro"}`, false},
 	}
 	for _, c := range cases {
@@ -67,6 +68,7 @@ type mockSeed struct {
 	claimStatus int
 
 	mu           sync.Mutex
+	sub          string // the sub /userinfo vends for the presented bearer
 	gotAuth      string
 	gotNoCache   bool
 	registerBody map[string]string
@@ -76,10 +78,19 @@ type mockSeed struct {
 
 func newMockSeed(t *testing.T, claimStatus int) *mockSeed {
 	t.Helper()
-	m := &mockSeed{claimStatus: claimStatus}
+	m := &mockSeed{claimStatus: claimStatus, sub: "test-sub"}
 	mux := http.NewServeMux()
 	mux.HandleFunc(discoveryWellKnown, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(validDescriptorJSON))
+	})
+	// userinfo verifies the bearer and returns the full payload (sub among the
+	// claims), mirroring the live seed.
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		m.record(r)
+		m.mu.Lock()
+		sub := m.sub
+		m.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"sub": sub, "iss": "mock", "aud": "disco"})
 	})
 	mux.HandleFunc("/claim", func(w http.ResponseWriter, r *http.Request) {
 		m.record(r)
@@ -121,6 +132,40 @@ func (m *mockSeed) seed(token string) *discoverySeed {
 	}
 	s.token = token
 	return s
+}
+
+// TestSeedUserinfo: userinfo verifies the bearer (carries it) and returns the
+// sub from the payload; userinfoURL is the absolute endpoint /join delegates to.
+func TestSeedUserinfo(t *testing.T) {
+	m := newMockSeed(t, 200)
+	m.sub = "cluster-sub-123"
+	s := m.seed("jwt-xyz")
+
+	got, err := s.userinfo(context.Background())
+	if err != nil {
+		t.Fatalf("userinfo: %v", err)
+	}
+	if got != m.sub {
+		t.Fatalf("userinfo sub = %q, want %q", got, m.sub)
+	}
+	m.mu.Lock()
+	auth, noCache := m.gotAuth, m.gotNoCache
+	m.mu.Unlock()
+	if auth != "Bearer jwt-xyz" || !noCache {
+		t.Fatalf("userinfo headers: auth=%q no-cache=%v", auth, noCache)
+	}
+	if want := m.ts.URL + "/userinfo"; s.userinfoURL() != want {
+		t.Fatalf("userinfoURL = %q, want %q", s.userinfoURL(), want)
+	}
+}
+
+// TestSeedUserinfoEmptySub fails closed when the seed returns no sub.
+func TestSeedUserinfoEmptySub(t *testing.T) {
+	m := newMockSeed(t, 200)
+	m.sub = ""
+	if _, err := m.seed("jwt").userinfo(context.Background()); err == nil {
+		t.Fatal("userinfo: want error on empty sub")
+	}
 }
 
 // TestSeedClaim maps 200 -> won, 409 -> lost, and carries the bearer + no-cache.
@@ -251,6 +296,7 @@ func TestSeedFromPeersMultiPeerSkips(t *testing.T) {
 // sniff -> claim -> Start -> register path and the Stop teardown of keepalive).
 func TestJoinViaDiscoveryBootstrap(t *testing.T) {
 	m := newMockSeed(t, 200) // claim won
+	m.sub = "repo:cnuss/libetcd:ref:refs/heads/main"
 
 	ctx := t.Context()
 	e := From(m.ts.URL).
@@ -262,6 +308,23 @@ func TestJoinViaDiscoveryBootstrap(t *testing.T) {
 		t.Fatalf("Join: %v", err)
 	}
 	defer e.Stop()
+
+	// Discovery (JWT) mode pinned the verified sub as the cluster token, stashed
+	// the JWT as the join credential, and recorded the seed's userinfo URL — so
+	// this node's own /join now verifies joiners against sub, not the raw JWT.
+	pj := e.(*peerJoiner)
+	pj.mu.Lock()
+	gotToken, gotCred, gotUserinfo := pj.cfg.InitialClusterToken, pj.joinCredential, pj.joinUserinfo
+	pj.mu.Unlock()
+	if gotToken != m.sub {
+		t.Fatalf("cluster token = %q, want sub %q", gotToken, m.sub)
+	}
+	if gotCred != "jwt-cluster" {
+		t.Fatalf("join credential = %q, want the JWT", gotCred)
+	}
+	if want := m.ts.URL + "/userinfo"; gotUserinfo != want {
+		t.Fatalf("join userinfo = %q, want %q", gotUserinfo, want)
+	}
 
 	// It bootstrapped: a single-member cluster reachable in-process.
 	ml, err := e.Self().MemberList(ctx)

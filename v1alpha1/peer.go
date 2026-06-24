@@ -314,7 +314,14 @@ func (p *peerJoiner) joinResolved(selfURLs []string, raceActive bool) (err error
 	selfAddrs := urlsToEndpoints(advertisePeerUrls)
 
 	p.mu.Lock()
-	token := p.cfg.InitialClusterToken
+	// The credential this node presents to the member it joins. In discovery
+	// (JWT) mode that's its own JWT (joinCredential); the receiver forwards it
+	// to the seed's userinfo and matches the verified sub against the cluster
+	// token. In plain mode it's the shared-secret cluster token itself.
+	token := p.joinCredential
+	if token == "" {
+		token = p.cfg.InitialClusterToken
+	}
 	p.mu.Unlock()
 	// A short dial timeout so a blackholed peer fails fast and joinAddToAny
 	// moves to the next one, rather than stalling on the OS connect timeout and
@@ -499,12 +506,28 @@ func (p *peerJoiner) joinViaDiscovery(seed *discoverySeed) error {
 	}
 
 	p.mu.Lock()
-	token := p.cfg.InitialClusterToken
+	jwt := p.cfg.InitialClusterToken
 	p.mu.Unlock()
-	if token == "" {
+	if jwt == "" {
 		return errors.New("join: discovery requires a cluster token (JWT) — set WithClusterToken")
 	}
-	seed.token = token
+	seed.token = jwt
+
+	// Verify the JWT and learn this node's cluster identity (sub) via the seed's
+	// userinfo endpoint. Every node bearing a token for the same cluster shares
+	// the sub, so it — not the per-node JWT — is the cluster credential: pin it
+	// as the cluster token (so this node's own /join serves JWT mode against it),
+	// and stash the JWT as the join credential plus the seed's userinfo URL the
+	// /join handler delegates verification to. Keeps libetcd crypto-free.
+	sub, err := seed.userinfo(ctx)
+	if err != nil {
+		return fmt.Errorf("join: discovery userinfo: %w", err)
+	}
+	p.mu.Lock()
+	p.joinCredential = jwt
+	p.joinUserinfo = seed.userinfoURL()
+	p.mu.Unlock()
+	p.EtcdImpl.WithClusterToken(sub) // re-derives srvcfg; locks mu, so call unlocked
 
 	won, err := seed.claim(ctx)
 	if err != nil {
@@ -845,6 +868,11 @@ func isLoopbackHost(host string) bool {
 // PeersEnv is the environment variable Join unions into its peer list, on top of
 // From's arguments: a comma-separated list or a JSON array of strings.
 const PeersEnv = "LIBETCD_PEERS"
+
+// ClusterTokenEnv sets the cluster token (WithClusterToken) from the
+// environment — e.g. a GitHub OIDC token for the discovery join. Applied at
+// construction; an explicit WithClusterToken overrides it.
+const ClusterTokenEnv = "LIBETCD_CLUSTER_TOKEN"
 
 // envPeers parses a LIBETCD_PEERS value into peer entries. A value that parses as
 // a JSON array of strings is used as such; otherwise it's split on commas. Each
