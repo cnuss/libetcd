@@ -58,10 +58,16 @@ func New(issuerURL string, key *rsa.PrivateKey, ttl time.Duration) (*Issuer, err
 // URL is the issuer identifier (matches the "iss" claim + discovery "issuer").
 func (i *Issuer) URL() string { return i.url }
 
-// Mint signs a token for sub and reports its lifetime in seconds.
-func (i *Issuer) Mint(sub string) (token string, expiresIn int, err error) {
+// Mint signs a token for sub and reports its lifetime in seconds. Any extra
+// claims are folded in first; the registered claims (iss/sub/aud/iat/exp) are
+// applied last so a stray extra key can never override them.
+func (i *Issuer) Mint(sub string, extra map[string]any) (token string, expiresIn int, err error) {
 	now := time.Now()
-	raw, err := jwt.Signed(i.signer).Claims(jwt.Claims{
+	builder := jwt.Signed(i.signer)
+	if len(extra) > 0 {
+		builder = builder.Claims(extra)
+	}
+	raw, err := builder.Claims(jwt.Claims{
 		Issuer:   i.url,
 		Subject:  sub,
 		Audience: jwt.Audience{"disco"},
