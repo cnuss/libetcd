@@ -112,6 +112,9 @@ func (s *Seed) WebService() *restful.WebService {
 		ws.Route(ws.POST("/token").Consumes("*/*").To(s.handleToken))
 		ws.Route(ws.GET(issuer.DiscoveryPath).To(s.handleDiscovery))
 		ws.Route(ws.GET(issuer.JWKSPath).To(s.handleJWKS))
+		// Root also serves the JWKS, so a bare GET of the issuer URL returns the
+		// verification keys — a convenience alias for the well-known jwks path.
+		ws.Route(ws.GET("/").To(s.handleJWKS))
 	}
 	return ws
 }
@@ -329,18 +332,70 @@ func (s *Seed) handleUserinfo(req *restful.Request, resp *restful.Response) {
 // it. Unauthenticated: each call yields a new random sub (an isolated cluster
 // namespace), so handing it out freely only lets a caller form/join its own
 // cluster. Share the returned token across the nodes of one cluster.
-func (s *Seed) handleToken(_ *restful.Request, resp *restful.Response) {
+func (s *Seed) handleToken(req *restful.Request, resp *restful.Response) {
 	sub, err := issuer.NewRandomSub()
 	if err != nil {
 		_ = resp.WriteError(http.StatusInternalServerError, errMint)
 		return
 	}
-	token, expiresIn, err := s.issuer.Mint(sub)
+	token, expiresIn, err := s.issuer.Mint(sub, cloudfrontClaims(req))
 	if err != nil {
 		_ = resp.WriteError(http.StatusInternalServerError, errMint)
 		return
 	}
 	_ = resp.WriteAsJson(tokenResponse{Token: token, Sub: sub, ExpiresIn: expiresIn})
+}
+
+// cloudfrontStringClaims / cloudfrontBoolClaims map the CloudFront viewer
+// request headers disco folds into a minted /token to their top-level claim
+// names. CloudFront injects these at the edge — the client can't forge them — so
+// only cloudfront-* is trusted; authorization, host, cookie, and other
+// client-settable headers are never included. Device-class flags become bools;
+// everything else carries through as the header's string value.
+var (
+	cloudfrontStringClaims = map[string]string{
+		"cloudfront-viewer-country":             "country",
+		"cloudfront-viewer-country-name":        "country_name",
+		"cloudfront-viewer-country-region":      "region",
+		"cloudfront-viewer-country-region-name": "region_name",
+		"cloudfront-viewer-city":                "city",
+		"cloudfront-viewer-postal-code":         "postal_code",
+		"cloudfront-viewer-metro-code":          "metro_code",
+		"cloudfront-viewer-latitude":            "latitude",
+		"cloudfront-viewer-longitude":           "longitude",
+		"cloudfront-viewer-time-zone":           "time_zone",
+		"cloudfront-viewer-asn":                 "asn",
+		"cloudfront-viewer-http-version":        "http_version",
+	}
+	cloudfrontBoolClaims = map[string]string{
+		"cloudfront-is-mobile-viewer":  "is_mobile",
+		"cloudfront-is-desktop-viewer": "is_desktop",
+		"cloudfront-is-tablet-viewer":  "is_tablet",
+		"cloudfront-is-smarttv-viewer": "is_smarttv",
+	}
+)
+
+// cloudfrontClaims extracts the CloudFront viewer headers from the request as
+// token claims (nil when none are present — a direct, non-CloudFront caller).
+// http.Header.Get canonicalizes the lookup key, so the lowercase header names
+// match regardless of wire casing.
+func cloudfrontClaims(req *restful.Request) map[string]any {
+	h := req.Request.Header
+	claims := make(map[string]any, len(cloudfrontStringClaims)+len(cloudfrontBoolClaims))
+	for hdr, name := range cloudfrontStringClaims {
+		if v := h.Get(hdr); v != "" {
+			claims[name] = v
+		}
+	}
+	for hdr, name := range cloudfrontBoolClaims {
+		if v := h.Get(hdr); v != "" {
+			claims[name] = strings.EqualFold(v, "true")
+		}
+	}
+	if len(claims) == 0 {
+		return nil
+	}
+	return claims
 }
 
 // handleDiscovery serves the issuer's OpenID Provider configuration, augmented
