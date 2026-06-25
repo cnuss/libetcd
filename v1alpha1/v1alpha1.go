@@ -118,6 +118,14 @@ type EtcdImpl struct {
 	joinUserinfo   string
 	joinCredential string
 
+	// leaveOnStop makes Stop remove this member from the cluster before tearing
+	// down (auto-leave), so the cluster's quorum shrinks with it and survivors
+	// never wedge on a stopped-but-still-counted voter. Set by joinViaDiscovery:
+	// discovery nodes are ephemeral (a new identity per run, never restarted in
+	// place), so leaving is always right — unlike a BYO/persistent node, whose
+	// Stop is a transient down that must keep its membership for restart.
+	leaveOnStop atomic.Bool
+
 	// serverOnce guards minting srv exactly once from the current srvcfg; a mint
 	// failure is latched as the context cause.
 	serverOnce sync.Once

@@ -532,6 +532,9 @@ func (p *peerJoiner) joinViaDiscovery(seed *discoverySeed) error {
 	p.joinCredential = jwt
 	p.joinUserinfo = seed.userinfoURL()
 	p.mu.Unlock()
+	// Discovery nodes are ephemeral — auto-leave the cluster on Stop so quorum
+	// shrinks with each departure and survivors never wedge on a dead voter.
+	p.leaveOnStop.Store(true)
 	p.EtcdImpl.WithClusterToken(sub) // re-derives srvcfg; locks mu, so call unlocked
 
 	won, err := seed.claim(ctx)
