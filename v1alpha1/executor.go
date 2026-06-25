@@ -5,6 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"go.etcd.io/etcd/server/v3/etcdserver"
+)
+
+// leaveTimeout/leaveRetry bound the auto-leave MemberRemove a discovery node
+// attempts on Stop. etcd rejects removing a healthy voter until the cluster has
+// been healthy for its HealthInterval — "unhealthy cluster" on a freshly-formed
+// one — so the attempt is retried until that window opens or the budget runs
+// out. Two HealthIntervals gives the window time to open with margin; an
+// already-settled node leaves on the first try, a node leaving seconds after
+// forming waits it out. Best-effort throughout: if it never succeeds (quorum
+// already lost, last member), Stop tears down anyway.
+const (
+	leaveTimeout = 2 * etcdserver.HealthInterval
+	leaveRetry   = 500 * time.Millisecond
 )
 
 // Start mints and starts the server (at most once) and serves the client and
@@ -100,6 +115,35 @@ func (b *EtcdImpl) Stop() error {
 		b.mu.Lock()
 		ch, ph, srv := b.clientHTTP, b.peerHTTP, b.srv
 		b.mu.Unlock()
+
+		// Auto-leave (discovery nodes): remove self from membership while raft
+		// still serves, so the cluster's quorum shrinks with us — a survivor never
+		// wedges on a stopped-but-still-counted voter. Best-effort and bounded; a
+		// failure (no quorum, or we're the last member) just proceeds to the stop
+		// below, which for a node going away anyway is harmless. Must run before
+		// HardStop: once the server is torn down a reconfig can't be proposed
+		// (configure returns ErrStopped).
+		if srv != nil && b.started.Load() && b.leaveOnStop.Load() {
+			if cli := b.Self(); cli != nil {
+				lctx, lcancel := context.WithTimeout(context.Background(), leaveTimeout)
+				id := uint64(srv.MemberID())
+				for {
+					if _, err := cli.MemberRemove(lctx, id); err == nil {
+						break // left cleanly — cluster quorum shrinks with us
+					}
+					// Most likely etcd's HealthInterval gate ("unhealthy cluster")
+					// on a freshly-formed cluster; retry until it opens or we run
+					// out of budget, then fall through to the teardown.
+					select {
+					case <-lctx.Done():
+					case <-time.After(leaveRetry):
+						continue
+					}
+					break
+				}
+				lcancel()
+			}
+		}
 
 		if srv != nil {
 			if b.started.Load() {
