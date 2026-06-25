@@ -168,11 +168,12 @@ var (
 // Fail-closed: any failure rejects the request, so the seed never serves an
 // unauthenticated discovery op.
 //
-// TODO: audience is not enforced yet — a valid token from any caller of a
-// trusted issuer (e.g. any GitHub Actions workflow) passes, namespaced by its
-// own sub, so it can form or join only clusters under that sub, never touch
-// another's. Tighten later with an expected audience and/or an allowed-sub
-// policy.
+// Audience is intentionally NOT enforced (SkipClientIDCheck), and this is
+// permanent. Any valid token from a trusted issuer (e.g. any GitHub Actions
+// workflow) passes, namespaced by its own sub. A sub is a self-contained,
+// isolated cluster namespace, so such a token can only form or join clusters
+// under its own sub — never touch another's. No expected-aud or allowed-sub
+// policy is planned.
 func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
 	// Pull the token out of an "Authorization: Bearer <token>" header.
 	const prefix = "Bearer "
@@ -259,7 +260,7 @@ func (s *Seed) GetVerifier(iss string) (*oidc.IDTokenVerifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery %q: %w", iss, err)
 	}
-	// SkipClientIDCheck: audience is not enforced yet (see verify).
+	// SkipClientIDCheck: audience is intentionally not enforced — see verify.
 	v, _ := s.verifiers.LoadOrStore(iss, provider.Verifier(&oidc.Config{SkipClientIDCheck: true}))
 	return v.(*oidc.IDTokenVerifier), nil
 }
