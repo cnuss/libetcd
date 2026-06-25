@@ -451,12 +451,17 @@ func (p *peerJoiner) joinResolved(selfURLs []string, raceActive bool) (err error
 	return nil
 }
 
-// seed op timeouts: a short bound on the sniff probe (so a non-seed or
-// unreachable URL falls through fast) and a longer one on the discovery ops.
+// seed op timeouts: a generous bound on the sniff probe and a shorter one on
+// the discovery ops. The probe is generous because the seed may be a cold-start
+// serverless backend (e.g. disco.nuss.io is a Lambda behind CloudFront) whose
+// first request can take several seconds — too tight a bound misreads the cold
+// seed as "not a seed" and silently falls through to treating the URL as a plain
+// raft peer. A real raft peer or a non-seed answers the GET fast (404/refused),
+// so it still falls through quickly; only a blackholed URL waits out the bound.
 // keepaliveInterval re-registers (and, for the bootstrapper, re-claims) well
 // within the seed's TTL so a live node's entries don't lapse.
 const (
-	seedProbeTimeout  = 3 * time.Second
+	seedProbeTimeout  = 30 * time.Second
 	seedOpTimeout     = 10 * time.Second
 	keepaliveInterval = 3 * time.Second
 )
