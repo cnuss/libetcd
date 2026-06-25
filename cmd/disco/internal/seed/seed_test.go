@@ -207,6 +207,46 @@ func TestSeedVerifiedRequests(t *testing.T) {
 	}
 }
 
+// TestVerifyRejectsUntrustedAndForged: the issuer is read from the unverified
+// token, so the trust check and the signature check both matter. A token
+// claiming an untrusted issuer is rejected (before any key fetch); a token
+// claiming a trusted issuer but signed by the wrong key fails verification.
+func TestVerifyRejectsUntrustedAndForged(t *testing.T) {
+	priv, kid, iss := newMockIssuer(t)
+	defer iss.Close()
+
+	s := New(&fakeStore{won: true}).WithIssuer(iss.URL) // only iss.URL trusted
+	container := restful.NewContainer()
+	container.Add(s.WebService())
+	ts := httptest.NewServer(container)
+	defer ts.Close()
+
+	status := func(token string) int {
+		r, _ := http.NewRequest(http.MethodGet, ts.URL+"/roster", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Accept", restful.MIME_JSON)
+		resp, _ := do(t, r)
+		return resp.StatusCode
+	}
+
+	// Untrusted issuer: rejected by the trust check, no verifier ever built.
+	if got := status(signToken(t, priv, kid, "https://evil.example", "sub")); got != http.StatusUnauthorized {
+		t.Fatalf("untrusted issuer: status %d, want 401", got)
+	}
+	if _, built := s.verifiers.Load("https://evil.example"); built {
+		t.Fatal("built a verifier for an untrusted issuer")
+	}
+
+	// Trusted issuer claim, but signed by a different key: signature check fails.
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa key: %v", err)
+	}
+	if got := status(signToken(t, other, kid, iss.URL, "sub")); got != http.StatusUnauthorized {
+		t.Fatalf("forged signature: status %d, want 401", got)
+	}
+}
+
 // TestSeedRejectsUnverified covers the fail-closed paths without a valid token.
 func TestSeedRejectsUnverified(t *testing.T) {
 	_, _, iss := newMockIssuer(t)
@@ -367,6 +407,35 @@ func TestTokenCloudFrontClaims(t *testing.T) {
 	}
 	if p["iss"] != url {
 		t.Fatalf("iss claim = %v, want %q", p["iss"], url)
+	}
+}
+
+// TestVerifierDedup: an issuer named twice (as it is in production — the
+// self-issuer URL also passed via WithIssuer(DefaultIssuerURL)) builds a single
+// verifier, not one OIDC-discovery round-trip per duplicate. Drives a real
+// verify and inspects the cached set.
+func TestVerifierDedup(t *testing.T) {
+	priv, kid, iss := newMockIssuer(t)
+	defer iss.Close()
+
+	s := New(&fakeStore{won: true}).WithIssuer(iss.URL).WithIssuer(iss.URL)
+	container := restful.NewContainer()
+	container.Add(s.WebService())
+	ts := httptest.NewServer(container)
+	defer ts.Close()
+
+	r, _ := http.NewRequest(http.MethodGet, ts.URL+"/roster", nil)
+	r.Header.Set("Authorization", "Bearer "+signToken(t, priv, kid, iss.URL, "sub-x"))
+	r.Header.Set("Accept", restful.MIME_JSON)
+	resp, body := do(t, r)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("roster status %d: %s", resp.StatusCode, body)
+	}
+
+	n := 0
+	s.verifiers.Range(func(_, _ any) bool { n++; return true })
+	if n != 1 {
+		t.Fatalf("verifiers=%d, want 1 (deduped)", n)
 	}
 }
 

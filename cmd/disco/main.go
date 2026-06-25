@@ -47,10 +47,14 @@ func main() {
 		log.Fatalf("disco: store init: %v", err)
 	}
 
-	// Trust GitHub Actions OIDC, and act as our own issuer (POST /token + JWKS)
-	// for callers without an external IdP.
+	// Trust GitHub Actions OIDC and the canonical disco token authority
+	// (https://disco.nuss.io), and act as our own issuer (POST /token + JWKS) for
+	// callers without an external IdP. On this deploy the self-issuer URL is
+	// https://disco.nuss.io, so ensureVerifiers dedups it to the in-process
+	// verifier — no JWKS round-trip.
 	srv := seed.New(backing).
 		WithIssuer("https://token.actions.githubusercontent.com").
+		WithIssuer(seed.DefaultIssuerURL).
 		WithSelfIssuer()
 	defer srv.Close()
 

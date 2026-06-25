@@ -10,22 +10,30 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	restful "github.com/emicklei/go-restful/v3"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/cnuss/libetcd/cmd/disco/internal/issuer"
 	"github.com/cnuss/libetcd/cmd/disco/internal/store"
 )
 
-// Defaults for the self-issuer (overridable via env in WithSelfIssuer).
-const (
-	defaultIssuerURL = "https://disco.nuss.io"
-	tokenTTL         = time.Hour
-)
+// DefaultIssuerURL is the canonical disco token authority: the self-issuer's URL
+// when DISCO_ISSUER_URL is unset, and the issuer callers pass to WithIssuer to
+// trust disco-minted tokens. A var so a caller can repoint it.
+var DefaultIssuerURL = "https://disco.nuss.io"
+
+// tokenTTL is the self-issued token lifetime.
+const tokenTTL = time.Hour
+
+// discoveryTimeout bounds an issuer's OIDC discovery fetch in GetVerifier.
+const discoveryTimeout = 15 * time.Second
 
 // Seed is the discovery rendezvous service — a stateless shim over a Store.
 type Seed struct {
@@ -33,8 +41,10 @@ type Seed struct {
 	issuers []string       // OIDC issuers to trust for cluster JWTs
 	issuer  *issuer.Issuer // optional self-issuer: mints + publishes disco-native tokens
 
-	mu        sync.Mutex
-	verifiers []*oidc.IDTokenVerifier // one per issuer, built lazily from OIDC discovery
+	// verifiers caches one *oidc.IDTokenVerifier per issuer URL, built lazily on
+	// first use. Keyed by URL, so issuers named twice (the self-issuer URL also
+	// passed to WithIssuer) share a single entry — dedup for free.
+	verifiers sync.Map // issuer URL -> *oidc.IDTokenVerifier
 }
 
 // New returns a Seed backed by the given store.
@@ -63,13 +73,16 @@ func (s *Seed) WithSelfIssuer() *Seed {
 	}
 	issURL := os.Getenv("DISCO_ISSUER_URL")
 	if issURL == "" {
-		issURL = defaultIssuerURL
+		issURL = DefaultIssuerURL
 	}
 	iss, err := issuer.New(issURL, key, tokenTTL)
 	if err != nil {
 		log.Fatalf("disco: issuer: %v", err)
 	}
 	s.issuer = iss
+	// Trust our own issued tokens: ensureVerifiers builds a verifier for this
+	// URL like any other (OIDC discovery + remote JWKS over loopback). Deduped
+	// against a matching WithIssuer (e.g. WithIssuer(DefaultIssuerURL)).
 	s.issuers = append(s.issuers, iss.URL())
 	return s
 }
@@ -139,13 +152,14 @@ const discoveryVersion = "v1"
 const userinfoPath = "/userinfo"
 
 var (
-	errNoBearer   = errors.New("missing bearer token")
-	errNoIssuers  = errors.New("no trusted issuers configured")
-	errNoSubject  = errors.New("token has no subject")
-	errClaimHeld  = errors.New("claim already held")
-	errMissingURL = errors.New("missing url")
-	errStore      = errors.New("store error")
-	errMint       = errors.New("token minting failed")
+	errNoBearer        = errors.New("missing bearer token")
+	errNoIssuer        = errors.New("token has no issuer")
+	errUntrustedIssuer = errors.New("untrusted issuer")
+	errNoSubject       = errors.New("token has no subject")
+	errClaimHeld       = errors.New("claim already held")
+	errMissingURL      = errors.New("missing url")
+	errStore           = errors.New("store error")
+	errMint            = errors.New("token minting failed")
 )
 
 // verify is the seed-side JWT gate. The node carries its cluster JWT as a
@@ -160,30 +174,50 @@ var (
 // another's. Tighten later with an expected audience and/or an allowed-sub
 // policy.
 func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
-	raw := bearerToken(req)
+	// Pull the token out of an "Authorization: Bearer <token>" header.
+	const prefix = "Bearer "
+	h := req.HeaderParameter("Authorization")
+	var raw string
+	if len(h) >= len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+		raw = strings.TrimSpace(h[len(prefix):])
+	}
 	if raw == "" {
 		_ = resp.WriteError(http.StatusUnauthorized, errNoBearer)
 		return
 	}
-	ctx := req.Request.Context()
-	verifiers, err := s.ensureVerifiers(ctx)
+
+	// Decode the token *unverified* just to read its issuer, so we can pick the
+	// matching verifier. These claims are attacker-controlled — anything
+	// malformed or missing an issuer is rejected here, and GetVerifier rejects an
+	// untrusted issuer before fetching any keys; the verifier below then checks
+	// the signature, issuer, and expiry for real.
+	parsed, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256})
 	if err != nil {
-		// Can't reach the issuer(s) to fetch keys — transient; let the caller retry.
-		_ = resp.WriteError(http.StatusServiceUnavailable, err)
+		_ = resp.WriteError(http.StatusUnauthorized, fmt.Errorf("jwt: %w", err))
+		return
+	}
+	var unverified jwt.Claims
+	if err := parsed.UnsafeClaimsWithoutVerification(&unverified); err != nil || unverified.Issuer == "" {
+		_ = resp.WriteError(http.StatusUnauthorized, errNoIssuer)
 		return
 	}
 
-	// A token is good if any trusted issuer validates it. The wrong verifier
-	// fails fast on the iss mismatch before checking the signature.
-	var tok *oidc.IDToken
-	var verr error
-	for _, v := range verifiers {
-		if tok, verr = v.Verify(ctx, raw); verr == nil {
-			break
+	verifier, err := s.GetVerifier(unverified.Issuer)
+	if err != nil {
+		// Untrusted issuer is the caller's fault (401); a trusted issuer whose
+		// discovery is unreachable is transient (503, retry).
+		if errors.Is(err, errUntrustedIssuer) {
+			_ = resp.WriteError(http.StatusUnauthorized, err)
+		} else {
+			_ = resp.WriteError(http.StatusServiceUnavailable, err)
 		}
+		return
 	}
-	if tok == nil {
-		_ = resp.WriteError(http.StatusUnauthorized, fmt.Errorf("jwt: %w", verr))
+
+	ctx := req.Request.Context()
+	tok, err := verifier.Verify(ctx, raw)
+	if err != nil {
+		_ = resp.WriteError(http.StatusUnauthorized, fmt.Errorf("jwt: %w", err))
 		return
 	}
 	if tok.Subject == "" {
@@ -204,40 +238,30 @@ func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restf
 	chain.ProcessFilter(req, resp)
 }
 
-// ensureVerifiers lazily builds one OIDC verifier per trusted issuer (each does
-// a discovery fetch to find the JWKS endpoint) and caches them. If discovery
-// fails it leaves the cache empty and returns the error, so a transient issuer
-// outage doesn't permanently wedge the seed — the next request retries.
-func (s *Seed) ensureVerifiers(ctx context.Context) ([]*oidc.IDTokenVerifier, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.verifiers != nil {
-		return s.verifiers, nil
+// GetVerifier returns the OIDC verifier for a trusted issuer, building it once
+// (OIDC discovery finds the jwks_uri; Provider.Verifier wires a remote KeySet
+// that fetches, caches, and rotates keys) and caching it by URL. iss is matched
+// against the configured trust list FIRST — callers pass the issuer of an
+// as-yet-unverified token, so an unknown one must be rejected (errUntrustedIssuer)
+// before any key fetch. Concurrent first-uses may each build; LoadOrStore keeps
+// one. A discovery failure isn't cached, so a transient outage retries.
+func (s *Seed) GetVerifier(iss string) (*oidc.IDTokenVerifier, error) {
+	if !slices.Contains(s.issuers, iss) {
+		return nil, fmt.Errorf("%w: %q", errUntrustedIssuer, iss)
 	}
-	if len(s.issuers) == 0 {
-		return nil, errNoIssuers
+	if v, ok := s.verifiers.Load(iss); ok {
+		return v.(*oidc.IDTokenVerifier), nil
 	}
-	vs := make([]*oidc.IDTokenVerifier, 0, len(s.issuers))
-	for _, iss := range s.issuers {
-		provider, err := oidc.NewProvider(ctx, iss)
-		if err != nil {
-			return nil, fmt.Errorf("oidc discovery %q: %w", iss, err)
-		}
-		// SkipClientIDCheck: audience is not enforced yet (see verify).
-		vs = append(vs, provider.Verifier(&oidc.Config{SkipClientIDCheck: true}))
+	// Bound the discovery fetch so a hung issuer can't wedge a request.
+	ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+	defer cancel()
+	provider, err := oidc.NewProvider(ctx, iss)
+	if err != nil {
+		return nil, fmt.Errorf("oidc discovery %q: %w", iss, err)
 	}
-	s.verifiers = vs
-	return vs, nil
-}
-
-// bearerToken pulls the token out of an "Authorization: Bearer <token>" header.
-func bearerToken(req *restful.Request) string {
-	const prefix = "Bearer "
-	h := req.HeaderParameter("Authorization")
-	if len(h) >= len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
-		return strings.TrimSpace(h[len(prefix):])
-	}
-	return ""
+	// SkipClientIDCheck: audience is not enforced yet (see verify).
+	v, _ := s.verifiers.LoadOrStore(iss, provider.Verifier(&oidc.Config{SkipClientIDCheck: true}))
+	return v.(*oidc.IDTokenVerifier), nil
 }
 
 // claims returns the full verified JWT payload the verify filter stashed.
@@ -338,7 +362,23 @@ func (s *Seed) handleToken(req *restful.Request, resp *restful.Response) {
 		_ = resp.WriteError(http.StatusInternalServerError, errMint)
 		return
 	}
-	token, expiresIn, err := s.issuer.Mint(sub, cloudfrontClaims(req))
+
+	// Fold the CloudFront viewer headers into the token as claims (empty for a
+	// direct, non-CloudFront caller — Mint then folds nothing). http.Header.Get
+	// canonicalizes the lookup key, so the lowercase names match any wire casing.
+	claims := make(map[string]any, len(cloudfrontStringClaims)+len(cloudfrontBoolClaims))
+	for hdr, name := range cloudfrontStringClaims {
+		if v := req.Request.Header.Get(hdr); v != "" {
+			claims[name] = v
+		}
+	}
+	for hdr, name := range cloudfrontBoolClaims {
+		if v := req.Request.Header.Get(hdr); v != "" {
+			claims[name] = strings.EqualFold(v, "true")
+		}
+	}
+
+	token, expiresIn, err := s.issuer.Mint(sub, claims)
 	if err != nil {
 		_ = resp.WriteError(http.StatusInternalServerError, errMint)
 		return
@@ -374,29 +414,6 @@ var (
 		"cloudfront-is-smarttv-viewer": "is_smarttv",
 	}
 )
-
-// cloudfrontClaims extracts the CloudFront viewer headers from the request as
-// token claims (nil when none are present — a direct, non-CloudFront caller).
-// http.Header.Get canonicalizes the lookup key, so the lowercase header names
-// match regardless of wire casing.
-func cloudfrontClaims(req *restful.Request) map[string]any {
-	h := req.Request.Header
-	claims := make(map[string]any, len(cloudfrontStringClaims)+len(cloudfrontBoolClaims))
-	for hdr, name := range cloudfrontStringClaims {
-		if v := h.Get(hdr); v != "" {
-			claims[name] = v
-		}
-	}
-	for hdr, name := range cloudfrontBoolClaims {
-		if v := h.Get(hdr); v != "" {
-			claims[name] = strings.EqualFold(v, "true")
-		}
-	}
-	if len(claims) == 0 {
-		return nil
-	}
-	return claims
-}
 
 // handleDiscovery serves the issuer's OpenID Provider configuration, augmented
 // with the seed's userinfo_endpoint so disco advertises a conformant OIDC
