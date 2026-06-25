@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -278,6 +279,97 @@ func TestDiscoveryDescriptor(t *testing.T) {
 	}
 }
 
+// jwtPayload base64-decodes a JWT's claims segment. The token is freshly minted
+// by the seed under test, so the test trusts it without re-verifying the
+// signature — it only inspects the claims.
+func jwtPayload(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d segments, want 3", len(parts))
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return m
+}
+
+// TestTokenCloudFrontClaims: /token folds the CloudFront viewer headers into the
+// minted token as top-level claims (device flags as bools), and never folds in
+// authorization/host or other non-cloudfront headers.
+func TestTokenCloudFrontClaims(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	url := "http://" + ln.Addr().String()
+	t.Setenv("DISCO_ISSUER_URL", url)
+
+	container := restful.NewContainer()
+	container.Add(New(&fakeStore{}).WithSelfIssuer().WebService())
+	srv := &http.Server{Handler: container}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, url+"/token", nil)
+	if err != nil {
+		t.Fatalf("token request: %v", err)
+	}
+	req.Header.Set("CloudFront-Viewer-Country", "US")
+	req.Header.Set("CloudFront-Viewer-City", "Peachtree Corners")
+	req.Header.Set("CloudFront-Viewer-Latitude", "33.97330")
+	req.Header.Set("CloudFront-Viewer-Asn", "8075")
+	req.Header.Set("CloudFront-Is-Mobile-Viewer", "false")
+	req.Header.Set("CloudFront-Is-Desktop-Viewer", "true")
+	req.Header.Set("Authorization", "Bearer should-not-be-folded-in")
+	req.Header.Set("Host", "should-not-appear")
+
+	resp, body := do(t, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token status %d: %s", resp.StatusCode, body)
+	}
+	var tok struct {
+		Token string `json:"token"`
+		Sub   string `json:"sub"`
+	}
+	mustJSON(t, body, &tok)
+
+	p := jwtPayload(t, tok.Token)
+	// Viewer string claims carried through under their mapped names.
+	for name, want := range map[string]string{
+		"country": "US", "city": "Peachtree Corners", "latitude": "33.97330", "asn": "8075",
+	} {
+		if p[name] != want {
+			t.Fatalf("claim %q = %v, want %q", name, p[name], want)
+		}
+	}
+	// Device flags mapped to bools.
+	if p["is_desktop"] != true {
+		t.Fatalf("is_desktop = %v, want true", p["is_desktop"])
+	}
+	if v, ok := p["is_mobile"]; !ok || v != false {
+		t.Fatalf("is_mobile = %v (present=%v), want false", v, ok)
+	}
+	// Sensitive / non-cloudfront headers never become claims.
+	for _, k := range []string{"authorization", "host", "Authorization", "Host"} {
+		if _, ok := p[k]; ok {
+			t.Fatalf("claim %q leaked into token: %v", k, p[k])
+		}
+	}
+	// Registered claims intact.
+	if p["sub"] != tok.Sub {
+		t.Fatalf("sub claim = %v, want %q", p["sub"], tok.Sub)
+	}
+	if p["iss"] != url {
+		t.Fatalf("iss claim = %v, want %q", p["iss"], url)
+	}
+}
+
 func do(t *testing.T, r *http.Request) (*http.Response, string) {
 	t.Helper()
 	resp, err := http.DefaultClient.Do(r)
@@ -348,6 +440,22 @@ func TestSelfIssuer(t *testing.T) {
 		}
 		if d.UserInfo != url+"/userinfo" {
 			t.Fatalf("discovery userinfo_endpoint=%q, want %q", d.UserInfo, url+"/userinfo")
+		}
+	}
+
+	// The root route aliases the JWKS: a bare GET of the issuer URL returns the
+	// same verification key set as the well-known jwks path.
+	{
+		resp, body := do(t, jsonReq(http.MethodGet, "/", ""))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("root status %d: %s", resp.StatusCode, body)
+		}
+		var jwks struct {
+			Keys []json.RawMessage `json:"keys"`
+		}
+		mustJSON(t, body, &jwks)
+		if len(jwks.Keys) != 1 {
+			t.Fatalf("root jwks keys=%d, want 1", len(jwks.Keys))
 		}
 	}
 
