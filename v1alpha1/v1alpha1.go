@@ -109,6 +109,15 @@ type EtcdImpl struct {
 	// InitialCluster to a single-member string. Once pinned, Join owns it.
 	clusterSet atomic.Bool
 
+	// joinUserinfo/joinCredential carry discovery JWT-mode wiring, set by
+	// joinViaDiscovery (both empty in plain shared-secret mode). joinUserinfo is
+	// the seed's userinfo URL the peer-join handler delegates JWT verification
+	// to; joinCredential is this node's own JWT — the credential it presents
+	// when joining another member, distinct from the cluster token, which
+	// discovery pins to the JWT's sub. Guarded by mu.
+	joinUserinfo   string
+	joinCredential string
+
 	// serverOnce guards minting srv exactly once from the current srvcfg; a mint
 	// failure is latched as the context cause.
 	serverOnce sync.Once
@@ -159,6 +168,13 @@ func newImpl() *EtcdImpl {
 	// the choice stick — setupLogging only auto-builds when ZapLoggerBuilder is nil.
 	cfg.Logger = "zap"
 	cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+
+	// Cluster token from the environment, so a node (or a whole discovery
+	// cluster) can be configured without code — e.g. LIBETCD_CLUSTER_TOKEN set to
+	// a GitHub OIDC token in CI. An explicit WithClusterToken later overrides it.
+	if tok := os.Getenv(ClusterTokenEnv); tok != "" {
+		cfg.InitialClusterToken = tok
+	}
 
 	b := &EtcdImpl{
 		cfg:    cfg,

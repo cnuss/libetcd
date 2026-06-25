@@ -21,6 +21,7 @@ const discoveryWellKnown = "/.well-known/libetcd-discovery"
 type discoveryDescriptor struct {
 	Discovery string `json:"discovery"`
 	Token     string `json:"token,omitempty"`
+	Userinfo  string `json:"userinfo"`
 	Claim     string `json:"claim"`
 	Register  string `json:"register"`
 	Roster    string `json:"roster"`
@@ -59,12 +60,39 @@ func probeSeed(ctx context.Context, raw string, hc *http.Client) (seed *discover
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&d); err != nil {
 		return nil, false
 	}
-	// A real descriptor names the discovery version and all three core ops;
-	// anything else is some other JSON endpoint, not a seed.
-	if d.Discovery == "" || d.Claim == "" || d.Register == "" || d.Roster == "" {
+	// A real descriptor names the discovery version, userinfo, and all three core
+	// ops; anything else is some other JSON endpoint, not a seed.
+	if d.Discovery == "" || d.Userinfo == "" || d.Claim == "" || d.Register == "" || d.Roster == "" {
 		return nil, false
 	}
 	return &discoverySeed{base: base, desc: d, http: hc}, true
+}
+
+// userinfoURL is the absolute userinfo endpoint a node's /join handler verifies
+// incoming join JWTs against.
+func (s *discoverySeed) userinfoURL() string { return s.base + s.desc.Userinfo }
+
+// userinfo verifies the seed bearer (s.token) and returns its sub — this node's
+// cluster identity.
+func (s *discoverySeed) userinfo(ctx context.Context) (string, error) {
+	resp, err := s.do(ctx, http.MethodGet, s.desc.Userinfo, nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", s.statusError("userinfo", resp)
+	}
+	var u struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&u); err != nil {
+		return "", fmt.Errorf("userinfo: decode: %w", err)
+	}
+	if u.Sub == "" {
+		return "", fmt.Errorf("userinfo: empty sub")
+	}
+	return u.Sub, nil
 }
 
 // claim attempts the atomic bootstrap claim. won=true to exactly one caller (it

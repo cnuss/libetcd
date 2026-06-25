@@ -167,12 +167,13 @@ func (b *EtcdImpl) PeerHandler() http.Handler {
 		return nil
 	}
 	b.mu.Lock()
-	lg, token := b.cfg.GetLogger(), b.cfg.InitialClusterToken
+	lg, token, userinfo := b.cfg.GetLogger(), b.cfg.InitialClusterToken, b.joinUserinfo
 	b.mu.Unlock()
 
 	js := &join.Server{
-		Self:  b.Self,
-		Token: token,
+		Self:     b.Self,
+		Token:    token,
+		Userinfo: userinfo, // non-empty (discovery) switches /join to JWT mode
 		Acquire: func(ctx context.Context, cli *clientv3.Client) (func() error, error) {
 			lk, err := lock.Acquire(ctx, cli, "peer-join")
 			if err != nil {

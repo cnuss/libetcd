@@ -78,8 +78,20 @@ type Server struct {
 	// Self returns the member's in-process clientv3 client (may be nil before
 	// the server is ready).
 	Self func() *clientv3.Client
-	// Token is the cluster's InitialClusterToken, the join credential.
+	// Token is the cluster credential. In plain mode it's the cluster's
+	// InitialClusterToken (a shared secret), constant-time-matched against the
+	// caller's. In JWT mode (Userinfo set) it's the cluster's sub: the caller's
+	// credential is a JWT whose verified sub must equal Token.
 	Token string
+	// Userinfo, when set, switches /join to JWT mode: the caller's credential is
+	// forwarded as a bearer to the discovery seed's userinfo endpoint, which
+	// verifies it and returns its sub; that sub must equal Token (the cluster's
+	// sub). This keeps libetcd crypto-free — the seed is the JWT verifier — at
+	// the cost of the seed being reachable during a join. Empty keeps the plain
+	// shared-secret match.
+	Userinfo string
+	// HTTP is the client for the userinfo call (defaults to http.DefaultClient).
+	HTTP *http.Client
 	// Acquire takes the cluster-wide join lock for the add critical section,
 	// serializing concurrent joiners (including ones reaching other members).
 	// It returns a release func.
@@ -110,17 +122,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authorize gates a verb on a matching cluster token and returns the in-process
-// client. The HTTP method is already dispatched by ServeHTTP. The token is
-// compared as a fixed-length SHA-256 digest so the comparison time doesn't vary
-// with the (attacker-controlled) token length — subtle.ConstantTimeCompare
-// short-circuits on a length mismatch, which would otherwise leak it.
+// authorize gates a verb on the cluster credential and returns the in-process
+// client. The HTTP method is already dispatched by ServeHTTP.
+//
+// JWT mode (Userinfo set): the credential is forwarded as a bearer to the seed's
+// userinfo endpoint, which verifies it and returns its sub; that sub must equal
+// Token (the cluster's sub). Plain mode: the credential is compared to Token as
+// a fixed-length SHA-256 digest, so the comparison time doesn't vary with the
+// (attacker-controlled) token length — subtle.ConstantTimeCompare short-circuits
+// on a length mismatch, which would otherwise leak it.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (*clientv3.Client, bool) {
-	got := sha256.Sum256([]byte(r.Header.Get(TokenHeader)))
-	want := sha256.Sum256([]byte(s.Token))
-	if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-		http.Error(w, "invalid cluster token", http.StatusForbidden)
-		return nil, false
+	cred := r.Header.Get(TokenHeader)
+	if s.Userinfo != "" {
+		if !s.verifyViaUserinfo(r.Context(), cred) {
+			http.Error(w, "invalid join token", http.StatusForbidden)
+			return nil, false
+		}
+	} else {
+		got := sha256.Sum256([]byte(cred))
+		want := sha256.Sum256([]byte(s.Token))
+		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+			http.Error(w, "invalid cluster token", http.StatusForbidden)
+			return nil, false
+		}
 	}
 	cli := s.Self()
 	if cli == nil {
@@ -128,6 +152,42 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (*clientv3.Cl
 		return nil, false
 	}
 	return cli, true
+}
+
+// verifyViaUserinfo forwards the credential as a bearer to the seed's userinfo
+// endpoint and accepts the join iff the verified sub equals Token (the cluster's
+// sub). The seed does the cryptographic JWT verification; libetcd only matches
+// the returned sub, so it stays crypto-free. Fail-closed: an unreachable seed,
+// a non-200, or a sub mismatch all reject.
+func (s *Server) verifyViaUserinfo(ctx context.Context, raw string) bool {
+	if raw == "" {
+		return false
+	}
+	hc := s.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.Userinfo, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+raw)
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var u struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&u); err != nil {
+		return false
+	}
+	return u.Sub != "" && u.Sub == s.Token
 }
 
 // add adds the caller as a learner and streams back a snapshot taken after the
