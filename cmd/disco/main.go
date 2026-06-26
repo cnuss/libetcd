@@ -34,7 +34,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 
 	restful "github.com/emicklei/go-restful/v3"
 
@@ -43,55 +42,6 @@ import (
 )
 
 func main() {
-	go func() {
-		cacheDir, err := os.UserCacheDir()
-		if err != nil {
-			log.Printf("disco: user cache dir: %v", err)
-			return
-		}
-
-		if fi, err := os.Stat(cacheDir); err != nil {
-			log.Printf("disco: user cache dir %s: stat: %v", cacheDir, err)
-		} else {
-			log.Printf("disco: user cache dir %s name=%s size=%d mode=%s modtime=%s isdir=%t sys=%+v",
-				cacheDir, fi.Name(), fi.Size(), fi.Mode(), fi.ModTime(), fi.IsDir(), fi.Sys())
-		}
-
-		// Dump the full mount table (Linux-only; no /proc elsewhere).
-		if data, err := os.ReadFile("/proc/self/mountinfo"); err != nil {
-			log.Printf("disco: mountinfo: %v", err)
-		} else {
-			log.Printf("disco: /proc/self/mountinfo:\n%s", strings.TrimRight(string(data), "\n"))
-		}
-
-		entries, err := os.ReadDir(cacheDir)
-		if err != nil {
-			log.Printf("disco: user cache dir %s: read: %v", cacheDir, err)
-		} else {
-			log.Printf("disco: user cache dir %s holds %d entries", cacheDir, len(entries))
-			for _, e := range entries {
-				info, err := e.Info()
-				if err != nil {
-					log.Printf("disco:   %s: info: %v", e.Name(), err)
-					continue
-				}
-				log.Printf("disco:   %s mode=%s size=%d", e.Name(), info.Mode(), info.Size())
-			}
-		}
-
-		probe, err := os.CreateTemp(cacheDir, "disco-writable-*")
-		if err != nil {
-			log.Printf("disco: user cache dir %s not writable: %v", cacheDir, err)
-			return
-		}
-		probe.Close()
-		if err := os.Remove(probe.Name()); err != nil {
-			log.Printf("disco: user cache dir %s: cleanup probe: %v", cacheDir, err)
-			return
-		}
-		log.Printf("disco: user cache dir %s writable", cacheDir)
-	}()
-
 	backing, err := kvdb.New()
 	if err != nil {
 		log.Fatalf("disco: store init: %v", err)
