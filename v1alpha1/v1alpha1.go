@@ -184,6 +184,11 @@ func newImpl() *EtcdImpl {
 		cfg.InitialClusterToken = tok
 	}
 
+	// Persistent data dir by default (LIBETCD_DATA_DIR, else a stable per-user
+	// cache path) so a node survives a process restart over its WAL without
+	// code — the resume lever. An explicit WithDir overrides it.
+	cfg.Dir = DefaultDataDir
+
 	b := &EtcdImpl{
 		cfg:    cfg,
 		ctx:    ctx,
