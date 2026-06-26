@@ -14,6 +14,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/cnuss/libetcd"
+	"github.com/cnuss/libetcd/v1alpha1"
 	"github.com/cnuss/libtunnel"
 )
 
@@ -28,15 +29,15 @@ const discoSeed = "https://disco.nuss.io"
 // inert outside the fleet workflow.
 func fleetGate(t *testing.T) (count int, token string) {
 	t.Helper()
-	if os.Getenv("LIBETCD_E2E_FLEET") != "1" {
+	if os.Getenv(FleetEnv) != "1" {
 		t.Skip("fleet e2e gated off — set LIBETCD_E2E_FLEET=1 plus NODE_COUNT/LIBETCD_CLUSTER_TOKEN (run by .github/workflows/e2e.yml)")
 	}
-	token = os.Getenv("LIBETCD_CLUSTER_TOKEN")
+	token = os.Getenv(v1alpha1.ClusterTokenEnv)
 	// TODO: NODE_COUNT is the interim way to tell a node the fleet size — we'll
 	// derive N a different way later (e.g. from the seed). Validate this path first.
-	count, _ = strconv.Atoi(os.Getenv("NODE_COUNT"))
+	count, _ = strconv.Atoi(os.Getenv(NodeCountEnv))
 	if token == "" || count < 1 {
-		t.Fatalf("fleet env incomplete: NODE_COUNT=%q token-set=%v", os.Getenv("NODE_COUNT"), token != "")
+		t.Fatalf("fleet env incomplete: NODE_COUNT=%q token-set=%v", os.Getenv(NodeCountEnv), token != "")
 	}
 	return count, token
 }
@@ -109,7 +110,7 @@ func TestDiscoveryFleet(t *testing.T) {
 
 	// Replication without coordination: write this node's key under a run-scoped
 	// prefix, then read back all N nodes' keys.
-	prefix := "fleet/" + os.Getenv("GITHUB_RUN_ID") + "/"
+	prefix := "fleet/" + os.Getenv(runIDEnv) + "/"
 	if _, err := cli.Put(ctx, prefix+tag, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("node %s put: %v", tag, err)
 	}
