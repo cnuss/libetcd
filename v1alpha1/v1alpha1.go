@@ -184,6 +184,16 @@ func newImpl() *EtcdImpl {
 		cfg.InitialClusterToken = tok
 	}
 
+	// Persistent data dir from the environment, so a node can be pointed at a
+	// stable dir (mounted volume / EFS) without code — the resume lever: a
+	// crashed node restarted over a surviving WAL boots that member. Only honored
+	// when set: an unset dir must stay per-node-unique (server.go materializes a
+	// fresh temp dir), or two unpinned in-process nodes would collide on one
+	// backend. An explicit WithDir overrides it.
+	if dir := os.Getenv(DataDirEnv); dir != "" {
+		cfg.Dir = dir
+	}
+
 	b := &EtcdImpl{
 		cfg:    cfg,
 		ctx:    ctx,

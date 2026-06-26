@@ -873,15 +873,6 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// PeersEnv is the environment variable Join unions into its peer list, on top of
-// From's arguments: a comma-separated list or a JSON array of strings.
-const PeersEnv = "LIBETCD_PEERS"
-
-// ClusterTokenEnv sets the cluster token (WithClusterToken) from the
-// environment — e.g. a GitHub OIDC token for the discovery join. Applied at
-// construction; an explicit WithClusterToken overrides it.
-const ClusterTokenEnv = "LIBETCD_CLUSTER_TOKEN"
-
 // envPeers parses a LIBETCD_PEERS value into peer entries. A value that parses as
 // a JSON array of strings is used as such; otherwise it's split on commas. Each
 // entry is trimmed and empties dropped; the rest is left for sanitizePeers to

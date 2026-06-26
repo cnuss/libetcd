@@ -179,6 +179,24 @@ The `e2e` suite covers this: `TestDirHandoff` (a single node, a new builder over
 an old dir) and `TestRestartCycle` (two full stop-everything/restart cycles of a
 cluster, zero-loss verified each time).
 
+## Environment variables
+
+A node can be configured without code through `LIBETCD_*` environment variables.
+Each is applied when the builder is constructed (`New` / `From`) and the
+equivalent `With*` call always overrides it, so the environment sets a default
+that code can still pin. The names are exported as consts in `v1alpha1`
+(`PeersEnv`, `ClusterTokenEnv`, `DataDirEnv`).
+
+| Variable | Equivalent | Effect |
+| --- | --- | --- |
+| `LIBETCD_PEERS` | `From(...)` args | Peers to join. A comma-separated list or a JSON array of strings, **unioned** with the arguments to `From` (either alone works; together they combine). With none from either source, `From()...Join()` bootstraps. |
+| `LIBETCD_CLUSTER_TOKEN` | `WithClusterToken` | Cluster token — e.g. a GitHub OIDC JWT for a discovery join, where the token's `sub` is the cluster identity. |
+| `LIBETCD_DATA_DIR` | `WithDir` | Data directory. Point a node at a persistent dir (a mounted volume, EFS) and a crashed node restarted over its surviving WAL resumes that member (see [Restarts and data-dir reuse](#restarts-and-data-dir-reuse)) — no code change. |
+
+So a node can be aimed at a cluster, handed its identity, and pointed at durable
+storage purely by environment: `LIBETCD_PEERS` + `LIBETCD_CLUSTER_TOKEN` +
+`LIBETCD_DATA_DIR` over a bare `From().Join()`.
+
 ## Layout
 
 Three packages, stable/alpha versioning:

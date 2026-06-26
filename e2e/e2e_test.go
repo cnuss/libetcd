@@ -95,7 +95,7 @@ func TestExamples(t *testing.T) {
 // `make e2e` covers it locally.
 func gateE2E(t *testing.T) {
 	t.Helper()
-	if os.Getenv("CI") == "true" && os.Getenv("LIBETCD_E2E") != "1" {
+	if os.Getenv(ciEnv) == "true" && os.Getenv(E2EEnv) != "1" {
 		t.Skip("e2e gated off on this CI cell (runs on a few variants); set LIBETCD_E2E=1 to force")
 	}
 }
