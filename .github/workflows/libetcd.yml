@@ -40,7 +40,7 @@ jobs:
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           # On a PR, github.sha is the merge commit; check the PR's own tip.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -92,7 +92,7 @@ jobs:
         # branching for $(...) / [ -n ... ] / piping.
         shell: bash
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: resolve go version
         id: goversion
@@ -107,7 +107,7 @@ jobs:
             echo "version=${{ matrix.go }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ steps.goversion.outputs.version }}
           cache: true
@@ -195,7 +195,7 @@ jobs:
       contents: write   # push tag + create release
       id-token: write   # cosign keyless signing via OIDC
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
