@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package snapshot is a minimal fork of go.etcd.io/etcd/etcdutl/snapshot
-// (v3_snapshot.go @ v3.6.12). It vendors only what libetcd's join-seed flow
+// (v3_snapshot.go @ v3.7.0). It vendors only what libetcd's join-seed flow
 // needs and changes only what must change; everything else is byte-for-byte
 // upstream so re-syncing against a new etcd is a small diff.
 //
@@ -52,6 +52,7 @@ import (
 	"reflect"
 
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
@@ -234,7 +235,7 @@ func (s *v3Manager) Restore(cfg RestoreConfig) error {
 		return err
 	}
 
-	if err := s.updateCIndex(hardstate.Commit, hardstate.Term); err != nil {
+	if err := s.updateCIndex(hardstate.GetCommit(), hardstate.GetTerm()); err != nil {
 		return err
 	}
 
@@ -389,8 +390,8 @@ func (s *v3Manager) saveWALAndSnap(snapIndex, snapTerm uint64) (*raftpb.HardStat
 		s.cl.AddMember(m, true)
 	}
 
-	md := &etcdserverpb.Metadata{NodeID: s.selfID, ClusterID: uint64(s.cl.ID())}
-	metadata, merr := md.Marshal()
+	md := &etcdserverpb.Metadata{NodeID: new(s.selfID), ClusterID: new(uint64(s.cl.ID()))}
+	metadata, merr := proto.Marshal(md)
 	if merr != nil {
 		return nil, merr
 	}
@@ -409,28 +410,28 @@ func (s *v3Manager) saveWALAndSnap(snapIndex, snapTerm uint64) (*raftpb.HardStat
 			voters = append(voters, uint64(id))
 		}
 	}
-	confState := raftpb.ConfState{Voters: voters, Learners: learners}
+	confState := &raftpb.ConfState{Voters: voters, Learners: learners}
 
 	// No entries after the snapshot: the node starts already applied to snapIndex.
-	hardState := raftpb.HardState{Term: snapTerm, Commit: snapIndex}
-	if err := w.Save(hardState, nil); err != nil {
+	hardState := raftpb.HardState{Term: new(snapTerm), Commit: new(snapIndex)}
+	if err := w.Save(&hardState, nil); err != nil {
 		return nil, err
 	}
 
 	raftSnap := raftpb.Snapshot{
 		Data: etcdserver.GetMembershipInfoInV2Format(s.lg, s.cl),
-		Metadata: raftpb.SnapshotMetadata{
-			Index:     snapIndex,
-			Term:      snapTerm,
+		Metadata: &raftpb.SnapshotMetadata{
+			Index:     new(snapIndex),
+			Term:      new(snapTerm),
 			ConfState: confState,
 		},
 	}
 	sn := snap.New(s.lg, s.snapDir)
-	if err := sn.SaveSnap(raftSnap); err != nil {
+	if err := sn.SaveSnap(&raftSnap); err != nil {
 		return nil, err
 	}
-	walSnap := walpb.Snapshot{Index: snapIndex, Term: snapTerm, ConfState: &confState}
-	return &hardState, w.SaveSnapshot(walSnap)
+	walSnap := walpb.Snapshot{Index: new(snapIndex), Term: new(snapTerm), ConfState: confState}
+	return &hardState, w.SaveSnapshot(&walSnap)
 }
 
 func (s *v3Manager) updateCIndex(commit uint64, term uint64) error {
