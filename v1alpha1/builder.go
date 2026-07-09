@@ -259,7 +259,7 @@ func (b *EtcdImpl) serverConfig() (config.ServerConfig, error) {
 	if err != nil {
 		return config.ServerConfig{}, fmt.Errorf("initial cluster: %w", err)
 	}
-	return config.ServerConfig{
+	srvcfg := config.ServerConfig{
 		// GetLogger returns the zap logger that Validate's setupLogging wired up;
 		// etcdserver.NewServer panics on a nil Logger.
 		Logger:                            b.cfg.GetLogger(),
@@ -274,8 +274,6 @@ func (b *EtcdImpl) serverConfig() (config.ServerConfig, error) {
 		MaxWALFiles:                       b.cfg.MaxWalFiles,
 		InitialPeerURLsMap:                urlsmap,
 		InitialClusterToken:               token,
-		DiscoveryURL:                      b.cfg.Durl,
-		DiscoveryProxy:                    b.cfg.Dproxy,
 		DiscoveryCfg:                      b.cfg.DiscoveryCfg,
 		NewCluster:                        b.cfg.IsNewCluster(),
 		PeerTLSInfo:                       b.cfg.PeerTLSInfo,
@@ -314,8 +312,10 @@ func (b *EtcdImpl) serverConfig() (config.ServerConfig, error) {
 		BootstrapDefragThresholdMegabytes: b.cfg.BootstrapDefragThresholdMegabytes,
 		MaxLearners:                       b.cfg.MaxLearners,
 		V2Deprecation:                     b.cfg.V2DeprecationEffective(),
-		ExperimentalLocalAddress:          b.cfg.InferLocalAddr(),
+		LocalAddress:                      b.cfg.InferLocalAddr(),
 		ServerFeatureGate:                 b.cfg.ServerFeatureGate,
 		Metrics:                           b.cfg.Metrics,
-	}, nil
+	}
+	srvcfg.PeerTLSInfo.LocalAddr = srvcfg.LocalAddress
+	return srvcfg, nil
 }
