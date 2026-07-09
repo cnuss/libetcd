@@ -1,4 +1,4 @@
-package v1alpha1_test
+package v0alpha0_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnuss/libetcd/v1alpha1"
+	"github.com/cnuss/libetcd/v0alpha0"
 )
 
 // TestStartStopRoundTrip starts a node, round-trips a key through the in-process
@@ -19,7 +19,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 	lc, _ := net.Listen("tcp", "127.0.0.1:0")
 	lp, _ := net.Listen("tcp", "127.0.0.1:0")
 
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithClientListener(lc).WithPeerListener(lp)
 
 	if err := e.Start(); err != nil {
@@ -45,7 +45,7 @@ func TestStartStopRoundTrip(t *testing.T) {
 
 // TestStopIdempotent checks Stop is safe to call more than once.
 func TestStopIdempotent(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir())
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -65,7 +65,7 @@ func TestJoin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	e1 := v1alpha1.New()
+	e1 := v0alpha0.New()
 	e1.WithDir(t.TempDir()).WithContext(ctx)
 	if err := e1.Start(); err != nil {
 		t.Fatalf("node1 Start: %v", err)
@@ -76,7 +76,7 @@ func TestJoin(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	e2 := v1alpha1.From(e1.Peers()...)
+	e2 := v0alpha0.From(e1.Peers()...)
 	e2.WithDir(t.TempDir()).WithContext(ctx)
 	if err := e2.Join(); err != nil {
 		t.Fatalf("node2 Join: %v", err)
@@ -115,7 +115,7 @@ func TestJoinBYOPeerServing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	e1 := v1alpha1.New()
+	e1 := v0alpha0.New()
 	e1.WithDir(t.TempDir()).WithContext(ctx)
 	if err := e1.Start(); err != nil {
 		t.Fatalf("node1 Start: %v", err)
@@ -131,7 +131,7 @@ func TestJoinBYOPeerServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e2 := v1alpha1.From(e1.Peers()...)
+	e2 := v0alpha0.From(e1.Peers()...)
 	e2.WithDir(t.TempDir()).WithContext(ctx).
 		WithPeerListener(nil, "http://"+lis2.Addr().String())
 
@@ -206,7 +206,7 @@ func TestWithPeerListener(t *testing.T) {
 			t.Parallel()
 
 			var lis net.Listener
-			e := v1alpha1.New()
+			e := v0alpha0.New()
 			e.WithDir(t.TempDir())
 			if tc.provideLis {
 				l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -251,7 +251,7 @@ func TestWithPeerListener(t *testing.T) {
 // no advertise URLs has nothing to bind and nothing to advertise, so it
 // latches a config error and Start surfaces it instead of booting.
 func TestWithPeerListenerNil(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(nil)
 	t.Cleanup(func() { _ = e.Stop() })
 
@@ -269,7 +269,7 @@ func TestWithPeerListenerNil(t *testing.T) {
 func TestWithPeerListenerBYO(t *testing.T) {
 	const advertised = "http://node.example:2380"
 
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(nil, advertised)
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -295,7 +295,7 @@ func TestWithPeerListenerBYO(t *testing.T) {
 // fail to parse collapses to the no-advertise case — there's no listener
 // address to fall back to, so it's the same latched config error.
 func TestWithPeerListenerBYOUnparseable(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(nil, "://nope", "")
 	t.Cleanup(func() { _ = e.Stop() })
 
@@ -315,7 +315,7 @@ func TestWithPeerListenerAdvertiseURL(t *testing.T) {
 	}
 	const advertised = "http://node.example:2380"
 
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(lis, advertised)
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -344,7 +344,7 @@ func TestWithPeerListenerAdvertiseNormalize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(lis, "https://node.example.com/")
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -366,7 +366,7 @@ func TestWithPeerListenerAdvertiseFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(lis, "://nonsense", "\x7f://bad")
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -383,7 +383,7 @@ func TestWithPeerListenerAdvertiseFallback(t *testing.T) {
 // TestEndpoints: a serving node reports its advertised client URL; a headless
 // client side reports none.
 func TestEndpoints(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir())
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -396,7 +396,7 @@ func TestEndpoints(t *testing.T) {
 		t.Fatalf("Endpoints() = %v, want one URL containing %q", eps, addr)
 	}
 
-	h := v1alpha1.New()
+	h := v0alpha0.New()
 	h.WithDir(t.TempDir()).WithClientListener(nil)
 	if err := h.Start(); err != nil {
 		t.Fatalf("headless Start: %v", err)
@@ -411,7 +411,7 @@ func TestEndpoints(t *testing.T) {
 // nothing served, no client URLs registered — while the in-process Self client
 // still reads and writes the keyspace.
 func TestWithClientListenerNil(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithClientListener(nil)
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -449,7 +449,7 @@ func TestWithClientListenerNil(t *testing.T) {
 // a nil result) must latch — the sync.Once is spent, so a later setter could
 // change the advertised URLs without the factory ever binding them.
 func TestWithListenerAfterMaterializeErrors(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithClientListener(nil)
 	if l := e.ClientListener(); l != nil { // materializes the (nil) client side
 		t.Fatalf("ClientListener = %v, want nil", l.Addr())
@@ -473,7 +473,7 @@ func TestFromBootstrap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	p := v1alpha1.From() // no peers
+	p := v0alpha0.From() // no peers
 	p.WithDir(t.TempDir()).WithContext(ctx)
 	if err := p.Join(); err != nil {
 		t.Fatalf("From().Join() bootstrap: %v", err)
@@ -496,7 +496,7 @@ func TestFromBootstrap(t *testing.T) {
 // a bad-input error, not a silent bootstrap — the bootstrap is keyed on the raw
 // argument count, not the sanitized result.
 func TestFromBadPeersStillErrors(t *testing.T) {
-	p := v1alpha1.From("htp://bad") // one unparseable peer (wrong scheme)
+	p := v0alpha0.From("htp://bad") // one unparseable peer (wrong scheme)
 	p.WithDir(t.TempDir())
 	t.Cleanup(func() { _ = p.Stop() })
 
@@ -515,7 +515,7 @@ func TestWithPeerListenerMultiAdvertiseBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(lis,
 		"https://a.example.com:2380",
 		"https://b.example.com:2380",

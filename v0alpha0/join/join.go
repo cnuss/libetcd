@@ -32,7 +32,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 
-	"github.com/cnuss/libetcd/v1alpha1/snapshot"
+	"github.com/cnuss/libetcd/v0alpha0/snapshot"
 )
 
 // Wire contract. One resource under /libetcd/, method-dispatched: POST adds the

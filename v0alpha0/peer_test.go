@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 )
 
 // TestEnvPeers covers parsing the LIBETCD_PEERS value: empty, CSV, JSON array,
@@ -84,7 +84,7 @@ func TestBootstrapRace(t *testing.T) {
 		urls[i] = "http://" + l.Addr().String()
 	}
 
-	nodes := make([]v1.EtcdPeer, n)
+	nodes := make([]v0.EtcdPeer, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range n {

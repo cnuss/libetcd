@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -33,7 +33,7 @@ const (
 // that member from its WAL — a restart, with the config's name/initial-cluster/
 // cluster-state ignored in favor of the on-disk identity. Start/Stop are
 // once-guarded, so a restart is always a fresh builder over the old dir; see
-// the v1.Executor contract.
+// the v0.Executor contract.
 //
 // When startWaitCtx is set (Join sets it before calling Start), the ready wait
 // is bounded by it instead of the user context and its expiry is returned as

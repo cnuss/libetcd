@@ -12,7 +12,7 @@ wraps [`go.etcd.io/etcd/server/v3/embed`](https://pkg.go.dev/go.etcd.io/etcd/ser
 behind a fluent builder so a Go program can spin up a real etcd node in-process
 and get back a ready-to-use `clientv3.Client`.
 
-It ships as stable/alpha versioned packages (`v1` stable contract, `v1alpha1`
+It ships as stable/alpha versioned packages (`v0` stable contract, `v0alpha0`
 mutable implementation), with CI, CodeQL, OpenSSF Scorecard, cosign-signed
 releases, Dependabot, examples, and an e2e harness.
 
@@ -184,7 +184,7 @@ cluster, zero-loss verified each time).
 A node can be configured without code through `LIBETCD_*` environment variables.
 Each is applied when the builder is constructed (`New` / `From`) and the
 equivalent `With*` call always overrides it, so the environment sets a default
-that code can still pin. The names are exported as consts in `v1alpha1`
+that code can still pin. The names are exported as consts in `v0alpha0`
 (`PeersEnv`, `ClusterTokenEnv`, `DataDirEnv`).
 
 | Variable | Equivalent | Effect |
@@ -203,14 +203,14 @@ Three packages, stable/alpha versioning:
 
 ```
 github.com/cnuss/libetcd           — root façade. Stable surface (New).
-github.com/cnuss/libetcd/v1        — stable Builder + Etcd interfaces.
-github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
+github.com/cnuss/libetcd/v0        — stable Builder + Etcd interfaces.
+github.com/cnuss/libetcd/v0alpha0  — current implementation. May change
                                    between alpha revisions.
 ```
 
 Application code imports the root (`libetcd.New()…`). Code that needs to declare
-types against the interfaces imports `v1`. Direct access to the `EtcdImpl` struct
-lives in `v1alpha1`.
+types against the interfaces imports `v0`. Direct access to the `EtcdImpl` struct
+lives in `v0alpha0`.
 
 For the file-by-file map, see
 [CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).

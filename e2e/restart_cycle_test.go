@@ -11,7 +11,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/cnuss/libetcd"
-	v1 "github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 )
 
 const (
@@ -116,9 +116,9 @@ func TestRestartCycle(t *testing.T) {
 // its dir and recorded addresses, and starts them concurrently — a restarted
 // member's Start blocks until the cluster has quorum, so serial starts would
 // deadlock.
-func restartCycleStartGeneration(t *testing.T, members []restartCycleMember) []v1.Etcd {
+func restartCycleStartGeneration(t *testing.T, members []restartCycleMember) []v0.Etcd {
 	t.Helper()
-	nodes := make([]v1.Etcd, len(members))
+	nodes := make([]v0.Etcd, len(members))
 	for i, m := range members {
 		nodes[i] = libetcd.New().
 			WithName(m.name).
@@ -130,7 +130,7 @@ func restartCycleStartGeneration(t *testing.T, members []restartCycleMember) []v
 	errs := make(chan error, len(nodes))
 	for i, n := range nodes {
 		wg.Add(1)
-		go func(name string, n v1.Etcd) {
+		go func(name string, n v0.Etcd) {
 			defer wg.Done()
 			if err := n.Start(); err != nil {
 				errs <- fmt.Errorf("%s Start: %w", name, err)
@@ -194,7 +194,7 @@ func restartCycleStopAll(t *testing.T, nodes ...interface{ Stop() error }) {
 	}
 }
 
-func restartCycleNodesToStoppers(nodes []v1.Etcd) []interface{ Stop() error } {
+func restartCycleNodesToStoppers(nodes []v0.Etcd) []interface{ Stop() error } {
 	out := make([]interface{ Stop() error }, len(nodes))
 	for i, n := range nodes {
 		out[i] = n

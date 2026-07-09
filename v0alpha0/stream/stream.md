@@ -164,7 +164,7 @@ Two mitigations:
    Single-node is unaffected (it never dials a peer); a multi-node join would
    fail to sync — which the warning flags.
 2. **Fail loud in CI.** `Intercepted` is a read-only predicate that re-walks the
-   same path. `TestRaftStreamIntercepted` (in `v1alpha1/server_test.go`) mints a
+   same path. `TestRaftStreamIntercepted` (in `v0alpha0/server_test.go`) mints a
    real server and asserts the stream `RoundTripper` is wrapped, so an etcd bump
    that moves a field turns into a red build, not a silent prod regression.
 

@@ -13,9 +13,9 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/cnuss/libetcd/v1alpha1"
-	"github.com/cnuss/libetcd/v1alpha1/join"
-	"github.com/cnuss/libetcd/v1alpha1/lock"
+	"github.com/cnuss/libetcd/v0alpha0"
+	"github.com/cnuss/libetcd/v0alpha0/join"
+	"github.com/cnuss/libetcd/v0alpha0/lock"
 )
 
 const testToken = "test-cluster-token"
@@ -155,7 +155,7 @@ func TestAuthViaUserinfo(t *testing.T) {
 // learner and streams a usable snapshot; Remove is idempotent; Promote of an
 // unknown member is permanent while a real-but-not-ready learner is retryable.
 func TestRoundTrip(t *testing.T) {
-	node := v1alpha1.New()
+	node := v0alpha0.New()
 	node.WithDir(t.TempDir()).WithClusterToken(testToken)
 	if err := node.Start(); err != nil {
 		t.Fatalf("node Start: %v", err)
@@ -236,7 +236,7 @@ func TestRoundTrip(t *testing.T) {
 // TestRemoveByPeerURLs covers the lost-response rollback: a joiner that never
 // learned its member ID removes the half-committed learner by its peer URLs.
 func TestRemoveByPeerURLs(t *testing.T) {
-	node := v1alpha1.New()
+	node := v0alpha0.New()
 	node.WithDir(t.TempDir()).WithClusterToken(testToken)
 	if err := node.Start(); err != nil {
 		t.Fatalf("node Start: %v", err)

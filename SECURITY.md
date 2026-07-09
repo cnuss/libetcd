@@ -66,7 +66,7 @@ cosign verify-blob \
 ## Scope
 
 In-scope: anything in this repository's library code (the root `libetcd`
-façade, `v1/`, `v1alpha1/`) or its release artifacts.
+façade, `v0/`, `v0alpha0/`) or its release artifacts.
 
 Out of scope: vulnerabilities in third-party dependencies or the Go
 standard library itself (report those to their respective projects), and

@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -22,17 +22,17 @@ import (
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 
-	v1 "github.com/cnuss/libetcd/v1"
-	"github.com/cnuss/libetcd/v1alpha1/join"
-	"github.com/cnuss/libetcd/v1alpha1/snapshot"
+	v0 "github.com/cnuss/libetcd/v0"
+	"github.com/cnuss/libetcd/v0alpha0/join"
+	"github.com/cnuss/libetcd/v0alpha0/snapshot"
 )
 
 // peerJoiner is the join-only builder returned by From. It wraps a concrete
 // *EtcdImpl (which carries the real config + Client accessors) but exposes only
-// the v1.EtcdPeer surface: the With* setters chain back to EtcdPeer (not Etcd,
+// the v0.EtcdPeer surface: the With* setters chain back to EtcdPeer (not Etcd,
 // so there is no Start), and Join() discovers a client from the peer URLs rather
 // than taking one. The embedded *EtcdImpl can't itself be EtcdPeer because its
-// With* return v1.Etcd; this wrapper re-types them.
+// With* return v0.Etcd; this wrapper re-types them.
 type peerJoiner struct {
 	*EtcdImpl
 	peers []string
@@ -55,42 +55,42 @@ type peerJoiner struct {
 	keepaliveCancel context.CancelFunc
 }
 
-var _ v1.EtcdPeer = (*peerJoiner)(nil)
+var _ v0.EtcdPeer = (*peerJoiner)(nil)
 
-// With* re-type the embedded EtcdImpl setters to return v1.EtcdPeer so chaining
+// With* re-type the embedded EtcdImpl setters to return v0.EtcdPeer so chaining
 // stays on the join-only surface.
 
-func (p *peerJoiner) WithName(name string) v1.EtcdPeer {
+func (p *peerJoiner) WithName(name string) v0.EtcdPeer {
 	p.EtcdImpl.WithName(name)
 	return p
 }
 
-func (p *peerJoiner) WithDir(dir string) v1.EtcdPeer {
+func (p *peerJoiner) WithDir(dir string) v0.EtcdPeer {
 	p.EtcdImpl.WithDir(dir)
 	return p
 }
 
-func (p *peerJoiner) WithClusterToken(token string) v1.EtcdPeer {
+func (p *peerJoiner) WithClusterToken(token string) v0.EtcdPeer {
 	p.EtcdImpl.WithClusterToken(token)
 	return p
 }
 
-func (p *peerJoiner) WithLog(level string, writer io.Writer) v1.EtcdPeer {
+func (p *peerJoiner) WithLog(level string, writer io.Writer) v0.EtcdPeer {
 	p.EtcdImpl.WithLog(level, writer)
 	return p
 }
 
-func (p *peerJoiner) WithContext(ctx context.Context) v1.EtcdPeer {
+func (p *peerJoiner) WithContext(ctx context.Context) v0.EtcdPeer {
 	p.EtcdImpl.WithContext(ctx)
 	return p
 }
 
-func (p *peerJoiner) WithClientListener(lis net.Listener) v1.EtcdPeer {
+func (p *peerJoiner) WithClientListener(lis net.Listener) v0.EtcdPeer {
 	p.EtcdImpl.WithClientListener(lis)
 	return p
 }
 
-func (p *peerJoiner) WithPeerListener(lis net.Listener, advertiseURLs ...string) v1.EtcdPeer {
+func (p *peerJoiner) WithPeerListener(lis net.Listener, advertiseURLs ...string) v0.EtcdPeer {
 	p.EtcdImpl.WithPeerListener(lis, advertiseURLs...)
 	return p
 }
@@ -668,7 +668,7 @@ func (p *peerJoiner) selfStatus(actx context.Context) (st *clientv3.StatusRespon
 // ID, the live cluster ID, and the post-add membership. The seeded node boots
 // as a follower already applied to the snapshot's raft index, so the leader
 // replicates forward over the log and never sends a raft snapshot — applying
-// one panics the embedded host on Windows (see v1alpha1/snapshot/snapshot.md).
+// one panics the embedded host on Windows (see v0alpha0/snapshot/snapshot.md).
 // It runs after the add (selfID + membership known) and before Start.
 func (p *peerJoiner) seedFromSnapshot(add *join.AddResult, selfName string) error {
 	p.mu.Lock()

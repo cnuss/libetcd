@@ -2,8 +2,8 @@ package e2e
 
 // Environment variables the e2e suite reads to gate and parameterize itself.
 // These are test-harness knobs (set by CI or a local run), distinct from the
-// library's own LIBETCD_* contract in v1alpha1 — the fleet also reads
-// v1alpha1.ClusterTokenEnv (LIBETCD_CLUSTER_TOKEN) and the GitHub-provided
+// library's own LIBETCD_* contract in v0alpha0 — the fleet also reads
+// v0alpha0.ClusterTokenEnv (LIBETCD_CLUSTER_TOKEN) and the GitHub-provided
 // GITHUB_RUN_ID, which are not redeclared here.
 const (
 	// E2EEnv force-enables the e2e suite on a CI cell that otherwise skips it

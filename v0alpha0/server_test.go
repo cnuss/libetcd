@@ -1,20 +1,20 @@
-package v1alpha1_test
+package v0alpha0_test
 
 import (
 	"testing"
 
-	v1 "github.com/cnuss/libetcd/v1"
-	"github.com/cnuss/libetcd/v1alpha1"
-	"github.com/cnuss/libetcd/v1alpha1/stream"
+	v0 "github.com/cnuss/libetcd/v0"
+	"github.com/cnuss/libetcd/v0alpha0"
+	"github.com/cnuss/libetcd/v0alpha0/stream"
 )
 
 // startedNode builds a node on a temp dir, starts it (auto-binding loopback
 // listeners), and registers Stop for cleanup. Going through Start/Stop releases
 // the backend and WAL file handles, which matters on Windows where t.TempDir's
 // RemoveAll fails if the WAL is still open.
-func startedNode(t *testing.T) v1.Etcd {
+func startedNode(t *testing.T) v0.Etcd {
 	t.Helper()
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir())
 	if err := e.Start(); err != nil {
 		t.Fatalf("Start: %v", err)

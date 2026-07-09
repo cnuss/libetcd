@@ -8,8 +8,8 @@ import (
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 
-	"github.com/cnuss/libetcd/v1alpha1"
-	"github.com/cnuss/libetcd/v1alpha1/lock"
+	"github.com/cnuss/libetcd/v0alpha0"
+	"github.com/cnuss/libetcd/v0alpha0/lock"
 )
 
 // testClient starts a real single-node etcd on a temp dir and returns its
@@ -17,7 +17,7 @@ import (
 // cluster, so the tests need one.
 func testClient(t *testing.T) *clientv3.Client {
 	t.Helper()
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir())
 	if err := e.Start(); err != nil {
 		t.Fatalf("start node: %v", err)

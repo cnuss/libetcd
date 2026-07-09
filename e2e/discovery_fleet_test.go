@@ -14,7 +14,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/cnuss/libetcd"
-	"github.com/cnuss/libetcd/v1alpha1"
+	"github.com/cnuss/libetcd/v0alpha0"
 	"github.com/cnuss/libtunnel"
 )
 
@@ -32,7 +32,7 @@ func fleetGate(t *testing.T) (count int, token string) {
 	if os.Getenv(FleetEnv) != "1" {
 		t.Skip("fleet e2e gated off — set LIBETCD_E2E_FLEET=1 plus NODE_COUNT/LIBETCD_CLUSTER_TOKEN (run by .github/workflows/e2e.yml)")
 	}
-	token = os.Getenv(v1alpha1.ClusterTokenEnv)
+	token = os.Getenv(v0alpha0.ClusterTokenEnv)
 	// TODO: NODE_COUNT is the interim way to tell a node the fleet size — we'll
 	// derive N a different way later (e.g. from the seed). Validate this path first.
 	count, _ = strconv.Atoi(os.Getenv(NodeCountEnv))

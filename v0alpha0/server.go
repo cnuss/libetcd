@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -8,9 +8,9 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/cnuss/libetcd/v1alpha1/join"
-	"github.com/cnuss/libetcd/v1alpha1/lock"
-	"github.com/cnuss/libetcd/v1alpha1/stream"
+	"github.com/cnuss/libetcd/v0alpha0/join"
+	"github.com/cnuss/libetcd/v0alpha0/lock"
+	"github.com/cnuss/libetcd/v0alpha0/stream"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"

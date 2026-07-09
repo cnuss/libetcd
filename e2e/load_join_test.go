@@ -11,7 +11,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/cnuss/libetcd"
-	"github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 )
 
 // TestLoadJoin stress-tests concurrent joins under sustained writes: while N
@@ -53,7 +53,7 @@ func TestLoadJoin(t *testing.T) {
 		acknowledged = make(map[string]string)
 		stopWriters  = make(chan struct{})
 		peersMu      sync.Mutex
-		peers        = make([]v1.EtcdPeer, 0, joinerCount)
+		peers        = make([]v0.EtcdPeer, 0, joinerCount)
 		joinErrs     = make(chan error, joinerCount)
 	)
 

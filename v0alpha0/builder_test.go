@@ -1,16 +1,16 @@
-package v1alpha1_test
+package v0alpha0_test
 
 import (
 	"net"
 	"testing"
 
-	"github.com/cnuss/libetcd/v1alpha1"
+	"github.com/cnuss/libetcd/v0alpha0"
 )
 
 // TestServerNilOnBadConfig checks Server returns nil when the config was latched
 // invalid (recover guard turns the Validate panic into a latched cause).
 func TestServerNilOnBadConfig(t *testing.T) {
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithLog("not-a-level", nil)
 	if e.Server() != nil {
 		t.Fatal("expected nil server for invalid config")
@@ -26,7 +26,7 @@ func TestAutoSyncInitialCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := v1alpha1.New()
+	e := v0alpha0.New()
 	e.WithDir(t.TempDir()).WithPeerListener(lp)
 	if err := e.Start(); err != nil {
 		t.Fatalf("auto-sync failed, Start: %v", err)

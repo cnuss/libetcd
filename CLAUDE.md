@@ -8,7 +8,7 @@ agent-specific framing.
 
 1. [README.md](./README.md) — what the library does + public surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
-3. [`v1/v1.go`](./v1/v1.go) — public `Builder`/`Etcd`/`EtcdPeer` interfaces
+3. [`v0/v0.go`](./v0/v0.go) — public `Builder`/`Etcd`/`EtcdPeer` interfaces
 4. [`examples/single-node/main.go`](./examples/single-node/main.go) — minimal call site
 
 ## Before you touch anything

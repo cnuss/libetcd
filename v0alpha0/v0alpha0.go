@@ -1,13 +1,13 @@
-// Package v1alpha1 is the current implementation behind the v1 interfaces. The
-// root libetcd façade wraps this; callers reaching directly into v1alpha1 use it
+// Package v0alpha0 is the current implementation behind the v0 interfaces. The
+// root libetcd façade wraps this; callers reaching directly into v0alpha0 use it
 // for the concrete types. Anything here may change between alpha revisions —
-// depend on the v1 contract, not these internals.
+// depend on the v0 contract, not these internals.
 //
-// The implementation is split by interface: v1alpha1.go (the EtcdImpl type and
+// The implementation is split by interface: v0alpha0.go (the EtcdImpl type and
 // New), builder.go (the With* setters and the validate/derive machinery),
 // server.go (Server handles), client.go (Client handles), and executor.go (the
 // Executor lifecycle: Start/Stop).
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -26,11 +26,11 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	v1 "github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 )
 
 // EtcdImpl implements the full Etcd surface (Server + Client + Builder + Executor).
-var _ v1.Etcd = (*EtcdImpl)(nil)
+var _ v0.Etcd = (*EtcdImpl)(nil)
 
 // EtcdImpl is the default implementation. It holds a live embed.Config that each
 // With* mutates in place under mu; after every mutation the config is
@@ -148,16 +148,16 @@ type EtcdImpl struct {
 
 // New returns an EtcdImpl with default configuration and a unique generated
 // member name. The root libetcd.New façade wraps this and returns it as the
-// v1.Etcd interface.
+// v0.Etcd interface.
 //
 // The builder starts from embed.NewConfig() — the minimum configuration that
 // passes embed.Config.Validate() — and revalidates after every With* call.
-func New() v1.Etcd {
+func New() v0.Etcd {
 	return newImpl()
 }
 
-// newImpl builds a concrete *EtcdImpl. New returns it as the full v1.Etcd
-// surface; From wraps it as the join-only v1.EtcdPeer surface.
+// newImpl builds a concrete *EtcdImpl. New returns it as the full v0.Etcd
+// surface; From wraps it as the join-only v0.EtcdPeer surface.
 func newImpl() *EtcdImpl {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cfg := embed.NewConfig()
@@ -221,7 +221,7 @@ func newImpl() *EtcdImpl {
 // (PeersEnv) — a comma-separated list or a JSON array of strings — so a node can
 // be aimed at a cluster by environment alone. Join normalizes and de-duplicates
 // the result; with no peers from either source, From()...Join() bootstraps.
-func From(peers ...string) v1.EtcdPeer {
+func From(peers ...string) v0.EtcdPeer {
 	// Union the arguments with the env peers before Join sees them. Copy first
 	// so we never append into the caller's backing array (From(slice...) aliases
 	// it). Raw strings — Join's sanitizePeers trims, default-schemes, and dedups.

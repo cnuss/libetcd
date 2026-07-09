@@ -11,19 +11,19 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Façade (`New`)                                 | [`lib.go`](./lib.go)                                             |
-| Interfaces (`Server`/`Client`/`Builder`/`Executor`/`Etcd`/`EtcdPeer`) | [`v1/v1.go`](./v1/v1.go)                             |
-| Type (`EtcdImpl`) + `New` + `From`             | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
-| Builder methods + config machinery             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Server handles                                 | [`v1alpha1/server.go`](./v1alpha1/server.go)                     |
-| Client accessors (`Self`/`Leader`/`Client`/`Peers`) | [`v1alpha1/client.go`](./v1alpha1/client.go)               |
-| Executor lifecycle (`Start`/`Stop`)            | [`v1alpha1/executor.go`](./v1alpha1/executor.go)                |
-| Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v1alpha1/peer.go`](./v1alpha1/peer.go)                         |
-| Peer-port join protocol (`/libetcd/v1/join`)   | [`v1alpha1/join/`](./v1alpha1/join)                              |
-| Cross-process join lock (etcd lease + mutex)   | [`v1alpha1/lock/`](./v1alpha1/lock)                              |
-| Snapshot seed fork (restores the join snapshot) | [`v1alpha1/snapshot/`](./v1alpha1/snapshot)                     |
-| Raft stream 206 handling (issue #8)            | [`v1alpha1/stream/`](./v1alpha1/stream)                          |
-| gRPC/REST gateway wiring                       | [`v1alpha1/gateway.go`](./v1alpha1/gateway.go)                  |
-| Unit tests (per interface)                     | [`v1alpha1/*_test.go`](./v1alpha1)                              |
+| Interfaces (`Server`/`Client`/`Builder`/`Executor`/`Etcd`/`EtcdPeer`) | [`v0/v0.go`](./v0/v0.go)                             |
+| Type (`EtcdImpl`) + `New` + `From`             | [`v0alpha0/v0alpha0.go`](./v0alpha0/v0alpha0.go)                 |
+| Builder methods + config machinery             | [`v0alpha0/builder.go`](./v0alpha0/builder.go)                   |
+| Server handles                                 | [`v0alpha0/server.go`](./v0alpha0/server.go)                     |
+| Client accessors (`Self`/`Leader`/`Client`/`Peers`) | [`v0alpha0/client.go`](./v0alpha0/client.go)               |
+| Executor lifecycle (`Start`/`Stop`)            | [`v0alpha0/executor.go`](./v0alpha0/executor.go)                |
+| Join-from-peer-URLs (`From`/`EtcdPeer`)        | [`v0alpha0/peer.go`](./v0alpha0/peer.go)                         |
+| Peer-port join protocol (`/libetcd/v1/join`)   | [`v0alpha0/join/`](./v0alpha0/join)                              |
+| Cross-process join lock (etcd lease + mutex)   | [`v0alpha0/lock/`](./v0alpha0/lock)                              |
+| Snapshot seed fork (restores the join snapshot) | [`v0alpha0/snapshot/`](./v0alpha0/snapshot)                     |
+| Raft stream 206 handling (issue #8)            | [`v0alpha0/stream/`](./v0alpha0/stream)                          |
+| gRPC/REST gateway wiring                       | [`v0alpha0/gateway.go`](./v0alpha0/gateway.go)                  |
+| Unit tests (per interface)                     | [`v0alpha0/*_test.go`](./v0alpha0)                              |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
@@ -40,16 +40,16 @@ Three packages, stable/alpha versioning:
 
 ```
 github.com/cnuss/libetcd           — root façade. Stable surface (New).
-github.com/cnuss/libetcd/v1        — stable Builder + Etcd interfaces.
-github.com/cnuss/libetcd/v1alpha1  — current implementation. May change
+github.com/cnuss/libetcd/v0        — stable Builder + Etcd interfaces.
+github.com/cnuss/libetcd/v0alpha0  — current implementation. May change
                                    between alpha revisions.
 ```
 
 Application code imports the root (`libetcd.New(name)…`). Code that needs to declare
-types against the interfaces imports `v1`. Direct access to the `EtcdImpl`
-struct lives in `v1alpha1`. The `v1alpha1` package wraps
+types against the interfaces imports `v0`. Direct access to the `EtcdImpl`
+struct lives in `v0alpha0`. The `v0alpha0` package wraps
 `go.etcd.io/etcd/server/v3/embed` — keep the `embed`-specific glue there, behind
-the stable `v1` surface.
+the stable `v0` surface.
 
 ## Local development
 
@@ -89,7 +89,7 @@ Easy to get wrong from the diff alone:
   the dev loop; CI and the e2e harness build each example with `GOWORK=off` to
   prove it still resolves on its own. Root `go build ./...` does **not** descend
   into the example modules.
-- **`v1alpha1` tests start a real node.** They mint and (in `executor_test.go`)
+- **`v0alpha0` tests start a real node.** They mint and (in `executor_test.go`)
   start an embedded etcd, so they take a second or two and need a free loopback
   port. Use `WithDir(t.TempDir())` and let `Start` auto-bind listeners.
 - **e2e builds binaries at runtime**, so the test cache can't see example
@@ -166,11 +166,11 @@ etc.
 ## Pull requests
 
 - Keep PRs focused. One feature or fix per PR.
-- Include test coverage for behavior changes — lib tests (`v1alpha1/`) for API
+- Include test coverage for behavior changes — lib tests (`v0alpha0/`) for API
   changes, e2e tests (`e2e/e2e_test.go`) for example-visible changes.
 - **Keep the README in sync with the façade.** The README mirrors the public
   surface, so any change to it must update the README in the same PR:
-  - a new/changed/removed method on `Builder` (or the `v1` surface) → update
+  - a new/changed/removed method on `Builder` (or the `v0` surface) → update
     the **API at a glance** block and the **Quick Start** snippet;
   - a new example → add a row to the **Examples** table;
   - a renamed package/version tier → update the **Layout** tree.

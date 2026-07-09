@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 import (
 	"context"
@@ -14,17 +14,17 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	v1 "github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 )
 
 // WithName sets the node (member) name.
-func (b *EtcdImpl) WithName(name string) v1.Etcd {
+func (b *EtcdImpl) WithName(name string) v0.Etcd {
 	b.mutate(func() error { b.cfg.Name = name; return nil })
 	return b
 }
 
 // WithDir sets the data directory.
-func (b *EtcdImpl) WithDir(dir string) v1.Etcd {
+func (b *EtcdImpl) WithDir(dir string) v0.Etcd {
 	b.mutate(func() error { b.cfg.Dir = dir; return nil })
 	return b
 }
@@ -42,7 +42,7 @@ func (b *EtcdImpl) WithDir(dir string) v1.Etcd {
 // first ClientListener() call, typically inside Start/Join): after that a
 // changed listener can't reach the running config, so the call latches an
 // error instead of lying.
-func (b *EtcdImpl) WithClientListener(lis net.Listener) v1.Etcd {
+func (b *EtcdImpl) WithClientListener(lis net.Listener) v0.Etcd {
 	b.mutate(func() error {
 		if b.clientListenerMaterialized.Load() {
 			return fmt.Errorf("client listener already materialized; configure before Start/Join")
@@ -64,7 +64,7 @@ func (b *EtcdImpl) WithClientListener(lis net.Listener) v1.Etcd {
 }
 
 // WithClusterToken sets the initial-cluster token.
-func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
+func (b *EtcdImpl) WithClusterToken(token string) v0.Etcd {
 	b.mutate(func() error { b.cfg.InitialClusterToken = token; return nil })
 	return b
 }
@@ -76,7 +76,7 @@ func (b *EtcdImpl) WithClusterToken(token string) v1.Etcd {
 // It installs a fresh zap logger and replaces the config's ZapLoggerBuilder, so
 // it takes effect even after New() has seeded the default (silent) logger —
 // unlike setting LogLevel alone, which setupLogging ignores once a builder is set.
-func (b *EtcdImpl) WithLog(level string, writer io.Writer) v1.Etcd {
+func (b *EtcdImpl) WithLog(level string, writer io.Writer) v0.Etcd {
 	b.mutate(func() error {
 		lg, err := buildLogger(level, writer)
 		if err != nil {
@@ -107,7 +107,7 @@ func buildLogger(level string, w io.Writer) (*zap.Logger, error) {
 
 // WithContext ties the node's lifetime to ctx: Start arranges a graceful Stop
 // when ctx is cancelled.
-func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
+func (b *EtcdImpl) WithContext(ctx context.Context) v0.Etcd {
 	b.mutate(func() error { b.userCtx = ctx; return nil })
 	return b
 }
@@ -154,7 +154,7 @@ func (b *EtcdImpl) WithContext(ctx context.Context) v1.Etcd {
 // Last call wins, but only until the listener has been materialized (the first
 // PeerListener() call, typically inside Start/Join): after that a changed
 // listener can't reach the running config, so the call latches an error.
-func (b *EtcdImpl) WithPeerListener(lis net.Listener, advertiseURLs ...string) v1.Etcd {
+func (b *EtcdImpl) WithPeerListener(lis net.Listener, advertiseURLs ...string) v0.Etcd {
 	b.mutate(func() error {
 		if b.peerListenerMaterialized.Load() {
 			return fmt.Errorf("peer listener already materialized; configure before Start/Join")

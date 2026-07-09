@@ -1,4 +1,4 @@
-package v1alpha1
+package v0alpha0
 
 // Environment variables libetcd reads. Each lets a node (or a whole discovery
 // cluster) be configured without code — set in the process environment, unioned

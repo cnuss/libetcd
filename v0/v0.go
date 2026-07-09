@@ -1,12 +1,12 @@
-// Package v1 is the intended-stable public surface for libetcd. The Builder
+// Package v0 is the intended-stable public surface for libetcd. The Builder
 // interface here is the contract callers should depend on, but until the
 // module reaches v1.0.0 breaking changes can still land here; the
-// implementation lives in v1alpha1 and may change between alpha revisions.
+// implementation lives in v0alpha0 and may change between alpha revisions.
 //
 // libetcd is a thin, developer-friendly SDK for embedded etcd: configure a node
 // with a fluent builder, then mint an etcdserver.EtcdServer from the validated
 // configuration.
-package v1
+package v0
 
 import (
 	"context"

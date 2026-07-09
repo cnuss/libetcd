@@ -13,28 +13,28 @@
 //
 //   - libetcd (this package) — thin façade exposing New. Stable surface for
 //     application code.
-//   - github.com/cnuss/libetcd/v1 — the stable Server, Client, Builder, Executor, and
+//   - github.com/cnuss/libetcd/v0 — the stable Server, Client, Builder, Executor, and
 //     Etcd interfaces. Application code that wants to declare types against the
 //     contract imports this.
-//   - github.com/cnuss/libetcd/v1alpha1 — the current implementation. Internals
+//   - github.com/cnuss/libetcd/v0alpha0 — the current implementation. Internals
 //     may change between alpha revisions; pin only if you need the concrete
 //     types.
 package libetcd
 
 import (
-	v1 "github.com/cnuss/libetcd/v1"
-	"github.com/cnuss/libetcd/v1alpha1"
+	v0 "github.com/cnuss/libetcd/v0"
+	"github.com/cnuss/libetcd/v0alpha0"
 )
 
-// Etcd is the node handle returned by New — the stable v1.Etcd surface
+// Etcd is the node handle returned by New — the stable v0.Etcd surface
 // (Server, Client, Builder, Executor) re-exported at the façade so callers can
-// name it as libetcd.Etcd without importing the v1 package.
-type Etcd = v1.Etcd
+// name it as libetcd.Etcd without importing the v0 package.
+type Etcd = v0.Etcd
 
-// EtcdPeer is the join handle returned by From — the stable v1.EtcdPeer surface
+// EtcdPeer is the join handle returned by From — the stable v0.EtcdPeer surface
 // re-exported at the façade so callers can name it as libetcd.EtcdPeer without
-// importing the v1 package.
-type EtcdPeer = v1.EtcdPeer
+// importing the v0 package.
+type EtcdPeer = v0.EtcdPeer
 
 // New returns an embedded etcd node. Configure it with the With* methods (they
 // mutate in place and chain), then call Start; Stop shuts it down.
@@ -44,7 +44,7 @@ type EtcdPeer = v1.EtcdPeer
 //	if err := e.Start(); err != nil { /* ... */ }
 //	defer e.Stop()
 func New() Etcd {
-	return v1alpha1.New()
+	return v0alpha0.New()
 }
 
 // From returns a node for an existing cluster reachable at the given peer URLs
@@ -78,5 +78,5 @@ func New() Etcd {
 // libetcd-to-libetcd: a stock etcd cluster doesn't serve the endpoint. The
 // token gate is only meaningful over a TLS peer listener; see issue #74.
 func From(peers ...string) EtcdPeer {
-	return v1alpha1.From(peers...)
+	return v0alpha0.From(peers...)
 }

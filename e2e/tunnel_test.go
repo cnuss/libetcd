@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cnuss/libetcd"
-	v1 "github.com/cnuss/libetcd/v1"
+	v0 "github.com/cnuss/libetcd/v0"
 	"github.com/cnuss/libtunnel"
 )
 
@@ -52,7 +52,7 @@ func TestMultiNodeTunnel(t *testing.T) {
 		t.Fatalf("Hosts() = %d entries, want %d", len(peers), n)
 	}
 
-	nodes := make([]v1.EtcdPeer, n)
+	nodes := make([]v0.EtcdPeer, n)
 	servers := make([]*http.Server, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
@@ -116,7 +116,7 @@ func TestMultiNodeTunnel(t *testing.T) {
 // WithContext on the node: each Join is bounded by the library default and
 // returns a real error on failure rather than hanging until the test context
 // fires. The caller closes the returned *http.Server before stopping the node.
-func newTunnelNode(ctx context.Context, selfURL string) (v1.EtcdPeer, *http.Server, error) {
+func newTunnelNode(ctx context.Context, selfURL string) (v0.EtcdPeer, *http.Server, error) {
 	u, err := url.Parse(selfURL)
 	if err != nil {
 		return nil, nil, err
