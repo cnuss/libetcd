@@ -69,6 +69,19 @@ func (b *EtcdImpl) WithClusterToken(token string) v0.Etcd {
 	return b
 }
 
+// WithInitialCluster sets the full initial cluster membership and pins it
+// (clusterSet), suppressing the single-member auto-sync — same mechanism Join
+// uses when it takes over the membership. The pin happens inside mutate's
+// critical section so the auto-sync in this very mutation already sees it.
+func (b *EtcdImpl) WithInitialCluster(cluster string) v0.Etcd {
+	b.mutate(func() error {
+		b.clusterSet.Store(true)
+		b.cfg.InitialCluster = cluster
+		return nil
+	})
+	return b
+}
+
 // WithLog routes the server's logs to writer at the given level (e.g. "debug",
 // "info", "warn", "error"). By default a node is silent (a no-op logger); call
 // WithLog to see etcd's internal logging, e.g. WithLog("debug", os.Stderr).

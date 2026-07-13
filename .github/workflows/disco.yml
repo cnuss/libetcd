@@ -123,8 +123,11 @@ jobs:
         with:
           # context is workspace-relative (working-directory affects run steps
           # only); the Dockerfile lives at cmd/Dockerfile and builds every
-          # cmd/* binary (disco entrypoint + etcdinit) into one image.
-          context: cmd
+          # cmd/* binary (disco entrypoint + etcdinit) into one image. The
+          # context is the repo root because etcdinit dogfoods the library
+          # via a `replace => ../..`.
+          context: .
+          file: cmd/Dockerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

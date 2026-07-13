@@ -7,13 +7,21 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+
+	"github.com/coreos/go-semver/semver"
 
 	"github.com/cnuss/libetcd/v0alpha0/join"
 	"github.com/cnuss/libetcd/v0alpha0/lock"
 	"github.com/cnuss/libetcd/v0alpha0/stream"
+	"go.etcd.io/etcd/api/v3/version"
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
@@ -21,6 +29,11 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc"
 	"go.etcd.io/etcd/server/v3/lease/leasehttp"
+	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/etcd/server/v3/storage/datadir"
+	"go.etcd.io/etcd/server/v3/storage/schema"
+	"go.etcd.io/etcd/server/v3/verify"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -297,4 +310,175 @@ func (b *EtcdImpl) peerServer() *http.Server {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.peerHTTP
+}
+
+// Init initializes this member's data directory offline — no snapshot file,
+// no running server. Port of the author's upstream `etcdutl init`
+// (etcd-io/etcd#22091), dogfooded through the builder: name, dir, initial
+// cluster, token, and advertised peer URLs all come from the accumulated
+// config. The produced directory contains an empty keyspace and the full
+// initial cluster membership, so the member afterwards starts with just its
+// name and data dir. Idempotent: an already-initialized directory is
+// validated (member identity derived from peer URLs + token, offline
+// consistency scan) rather than clobbered.
+func (b *EtcdImpl) Init() error {
+	if cause := context.Cause(b.ctx); cause != nil {
+		return cause
+	}
+
+	// Default an unset data dir the same way Server() does: a fresh temp dir
+	// named for the node.
+	b.mu.Lock()
+	emptyDir, name := b.cfg.Dir == "", b.cfg.Name
+	b.mu.Unlock()
+	if emptyDir {
+		dir, err := os.MkdirTemp("", name+"-")
+		if err != nil {
+			return fmt.Errorf("create data dir: %w", err)
+		}
+		b.WithDir(dir)
+	}
+
+	b.mu.Lock()
+	srvcfg := b.srvcfg
+	dataDir, walDir := b.cfg.Dir, b.cfg.WalDir
+	cluster, token := b.cfg.InitialCluster, b.cfg.InitialClusterToken
+	name = b.cfg.Name
+	peerURLs := make([]string, len(b.cfg.AdvertisePeerUrls))
+	for i, u := range b.cfg.AdvertisePeerUrls {
+		peerURLs[i] = u.String()
+	}
+	lg := b.cfg.GetLogger()
+	b.mu.Unlock()
+	// WithDir above (or any earlier setter) may have latched a config error.
+	if cause := context.Cause(b.ctx); cause != nil {
+		return cause
+	}
+
+	if walDir == "" {
+		walDir = datadir.ToWALDir(dataDir)
+	}
+	if err := srvcfg.VerifyBootstrap(); err != nil {
+		return err
+	}
+
+	if fileutil.Exist(dataDir) && !fileutil.DirEmpty(dataDir) {
+		return initValidateExistingDataDir(lg, name, dataDir, walDir, srvcfg.InitialPeerURLsMap, token)
+	}
+
+	// Restore requires a snapshot file; synthesize an empty one so the
+	// initialized member starts with an empty keyspace.
+	seedDir, err := os.MkdirTemp("", "libetcd-init-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(seedDir)
+	seedDB := filepath.Join(seedDir, "db")
+	if err := initWriteEmptySeedDB(lg, seedDB); err != nil {
+		return err
+	}
+
+	return snapshot.NewV3(lg).Restore(snapshot.RestoreConfig{
+		SnapshotPath:        seedDB,
+		Name:                name,
+		OutputDataDir:       dataDir,
+		OutputWALDir:        walDir,
+		PeerURLs:            peerURLs,
+		InitialCluster:      cluster,
+		InitialClusterToken: token,
+		// The synthesized db has no trailing sha256, like a db copied from a
+		// data directory.
+		SkipHashCheck: true,
+	})
+}
+
+// initValidateExistingDataDir checks that an existing data directory was
+// initialized for the same member and cluster configuration. The expected
+// member ID is derived from the member's peer URLs and the initial cluster
+// token, so a token, peer URL, or membership mismatch surfaces as an unknown
+// member ID.
+func initValidateExistingDataDir(lg *zap.Logger, name, dataDir, walDir string, ics types.URLsMap, clusterToken string) error {
+	expectedCluster, err := membership.NewClusterFromURLsMap(lg, clusterToken, ics)
+	if err != nil {
+		return err
+	}
+	expectedMember := expectedCluster.MemberByName(name) //nolint:staticcheck // See https://github.com/dominikh/go-tools/issues/1698
+
+	dbPath := datadir.ToBackendFileName(dataDir)
+	if !fileutil.Exist(dbPath) {
+		return fmt.Errorf("data-dir %q is not empty and has no backend database %q; it is not an etcd data directory", dataDir, dbPath)
+	}
+	if !fileutil.Exist(walDir) || fileutil.DirEmpty(walDir) {
+		return fmt.Errorf("data-dir %q is not empty and has no WAL directory %q; it is not an etcd data directory", dataDir, walDir)
+	}
+
+	be := backend.NewDefaultBackend(lg, dbPath)
+	members, _ := schema.NewMembershipBackend(lg, be).MustReadMembersFromBackend()
+	be.Close()
+
+	found := members[expectedMember.ID]
+	if found == nil {
+		return fmt.Errorf("data-dir %q has no member %q with ID %s; it was initialized with a different initial cluster, cluster token or peer URLs", dataDir, name, expectedMember.ID)
+	}
+	if found.Name != "" && found.Name != name {
+		return fmt.Errorf("data-dir %q member %s has name %q, expected %q; it belongs to a different member", dataDir, expectedMember.ID, found.Name, name)
+	}
+
+	if walDir != datadir.ToWALDir(dataDir) {
+		// verify.Verify only supports the default layout with the WAL
+		// directory inside the data directory.
+		lg.Warn(
+			"skipping data consistency verification, not supported with a detached WAL dir",
+			zap.String("data-dir", dataDir),
+			zap.String("wal-dir", walDir),
+		)
+	} else if err := initVerifyDataDir(lg, dataDir); err != nil {
+		return fmt.Errorf("data-dir %q failed consistency verification: %w", dataDir, err)
+	}
+
+	lg.Info(
+		"data directory already initialized for this member, skipping",
+		zap.String("data-dir", dataDir),
+		zap.String("name", name),
+		zap.String("member-id", expectedMember.ID.String()),
+	)
+	return nil
+}
+
+// initVerifyDataDir runs offline consistency verification of a data
+// directory. verify.Verify reports problems as errors but panics on some
+// kinds of corruption; recover those into an error so Init fails cleanly.
+func initVerifyDataDir(lg *zap.Logger, dataDir string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return verify.Verify(verify.Config{
+		Logger:  lg,
+		DataDir: dataDir,
+	})
+}
+
+// initWriteEmptySeedDB creates an empty backend database with the same
+// buckets a freshly bootstrapped member would create, stamped with this
+// binary's storage version so the started server sees a current-format db
+// rather than falling back to legacy schema-version detection.
+func initWriteEmptySeedDB(lg *zap.Logger, path string) error {
+	be := backend.NewDefaultBackend(lg, path)
+	defer be.Close()
+
+	tx := be.BatchTx()
+	tx.LockOutsideApply()
+	for _, bucket := range schema.AllBuckets {
+		tx.UnsafeCreateBucket(bucket)
+	}
+
+	binaryVersion := semver.New(version.Version)
+	storageVersion := semver.Version{Major: binaryVersion.Major, Minor: binaryVersion.Minor}
+	schema.UnsafeSetStorageVersion(tx, &storageVersion)
+	tx.Unlock()
+
+	be.ForceCommit()
+	return nil
 }
