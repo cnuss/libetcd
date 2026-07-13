@@ -18,7 +18,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.0 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.9 // indirect
@@ -73,6 +73,7 @@ require (
 	go.etcd.io/bbolt v1.5.0 // indirect
 	go.etcd.io/etcd/api/v3 v3.7.0 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.0 // indirect
+	go.etcd.io/etcd/etcdutl/v3 v3.7.0 // indirect
 	go.etcd.io/etcd/pkg/v3 v3.7.0 // indirect
 	go.etcd.io/etcd/server/v3 v3.7.0 // indirect
 	go.etcd.io/raft/v3 v3.7.0 // indirect

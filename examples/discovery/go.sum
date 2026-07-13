@@ -87,6 +87,8 @@ go.etcd.io/etcd/client/pkg/v3 v3.7.0 h1:sW9njJzS3vXKcAJjjLQ4nk+avNUJ12Bcijcx8ehU
 go.etcd.io/etcd/client/pkg/v3 v3.7.0/go.mod h1:cnzZGIUzSfjEwLC6UBVsSXlEK1eepS/JUD7wE6PLRT0=
 go.etcd.io/etcd/client/v3 v3.7.0 h1:5MHO37VbPB87VRPKUXEcicjeQWiTSjpPv3Ume8xPx20=
 go.etcd.io/etcd/client/v3 v3.7.0/go.mod h1:DJ382WuwjmbowjPDyaaQ0idWXy4dh91XRhe4FOrb9vM=
+go.etcd.io/etcd/etcdutl/v3 v3.7.0 h1:NWpz72HizSHVmOK+zDA6LwLpFBq5qAQiiJm3VV55rDY=
+go.etcd.io/etcd/etcdutl/v3 v3.7.0/go.mod h1:4l1DPx/nyxKAC4unO7cfDQwC1Gxleb+2AjCD25gZDt4=
 go.etcd.io/etcd/pkg/v3 v3.7.0 h1:aUBHGzXnYL2m3AlZfKp0ZhHQLVZIKfu9QsIlYdr+mxc=
 go.etcd.io/etcd/pkg/v3 v3.7.0/go.mod h1:fDQYyc8rOC1Yl4EZLh0O1OjHzwJW7jAly80+BpD1M9o=
 go.etcd.io/etcd/server/v3 v3.7.0 h1:ScdUdN8ljuimp0lZaNq0otLMrHcFSFT+dQyT1j7JSFo=

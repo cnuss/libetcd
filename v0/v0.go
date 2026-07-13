@@ -51,6 +51,15 @@ type Server interface {
 	// binds it, or when the peer side is BYO-served
 	// (WithPeerListener(nil, advertiseURLs...)) and libetcd binds nothing.
 	PeerListener() net.Listener
+
+	// Init initializes this member's data directory offline — no snapshot
+	// file, no running server. The produced directory contains an empty
+	// keyspace and the full initial cluster membership, so the member can
+	// afterwards be started with just its name and data dir. Idempotent: an
+	// already-initialized directory is validated (same member identity,
+	// offline consistency check) rather than clobbered. For multi-member
+	// bootstrap, run once per member with the same WithInitialCluster.
+	Init() error
 }
 
 // Client exposes clientv3.Clients to the cluster from a running node.
@@ -111,6 +120,14 @@ type Builder[T any] interface {
 	// WithClusterToken sets the initial-cluster token. Default "etcd-cluster"
 	// (embed's default).
 	WithClusterToken(token string) T
+	// WithInitialCluster sets the full initial cluster membership
+	// ("name1=peerURL1,name2=peerURL2,..."), pinning it: the single-member
+	// auto-sync that normally keeps InitialCluster pointing at this node
+	// stops, exactly as when Join pins the membership. For offline
+	// multi-member bootstrap (Init); this node's name and advertised peer
+	// URLs must appear in the map, so set WithName (and the peer advertise
+	// URLs) first.
+	WithInitialCluster(cluster string) T
 	// WithLog routes the server's logs to writer at the given level (e.g.
 	// "debug", "info", "warn", "error"). A node is silent by default.
 	WithLog(level string, writer io.Writer) T

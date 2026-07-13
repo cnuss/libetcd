@@ -7,6 +7,7 @@ go 1.26.1
 use (
 	.
 	./cmd/disco
+	./cmd/etcdinit
 	./e2e
 	./examples/discovery
 	./examples/multi-node

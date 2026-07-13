@@ -75,6 +75,11 @@ func (p *peerJoiner) WithClusterToken(token string) v0.EtcdPeer {
 	return p
 }
 
+func (p *peerJoiner) WithInitialCluster(cluster string) v0.EtcdPeer {
+	p.EtcdImpl.WithInitialCluster(cluster)
+	return p
+}
+
 func (p *peerJoiner) WithLog(level string, writer io.Writer) v0.EtcdPeer {
 	p.EtcdImpl.WithLog(level, writer)
 	return p
