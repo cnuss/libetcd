@@ -71,12 +71,18 @@ jobs:
         with:
           go-version: stable
           cache: true
-          # setup-go runs at the repo root; point it at this module's go.sum.
-          cache-dependency-path: cmd/disco/go.sum
+          # setup-go runs at the repo root; point it at the cmd modules' sums.
+          cache-dependency-path: |
+            cmd/disco/go.sum
+            cmd/etcdinit/go.sum
 
       # Fast Go gate before the slower image build (the Dockerfile compiles, but
-      # doesn't vet). GOWORK=off (workflow env) resolves the module on its own.
+      # doesn't vet). GOWORK=off (workflow env) resolves each module on its own.
       - name: go vet
+        run: go vet ./...
+
+      - name: go vet (etcdinit)
+        working-directory: cmd/etcdinit
         run: go vet ./...
 
       - name: go build
@@ -116,8 +122,9 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           # context is workspace-relative (working-directory affects run steps
-          # only); the Dockerfile lives at cmd/disco/Dockerfile.
-          context: cmd/disco
+          # only); the Dockerfile lives at cmd/Dockerfile and builds every
+          # cmd/* binary (disco entrypoint + etcdinit) into one image.
+          context: cmd
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
