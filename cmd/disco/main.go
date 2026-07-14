@@ -44,7 +44,7 @@ import (
 func main() {
 	backing, err := kvdb.New()
 	if err != nil {
-		log.Fatalf("disco: store init: %v", err)
+		log.Printf("disco: store init: %v", err)
 	}
 
 	// Trust GitHub Actions OIDC and the canonical disco token authority

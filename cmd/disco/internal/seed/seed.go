@@ -5,16 +5,21 @@ package seed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/cnuss/libtunnel"
 	"github.com/coreos/go-oidc/v3/oidc"
 	restful "github.com/emicklei/go-restful/v3"
 	"github.com/go-jose/go-jose/v4"
@@ -115,6 +120,12 @@ func (s *Seed) WebService() *restful.WebService {
 	// verify it and read its sub, so libetcd itself stays crypto-free.
 	ws.Route(ws.GET(userinfoPath).Filter(s.verify).To(s.handleUserinfo))
 
+	// serve demonstrates launching an arbitrary HTTP server from inside AWS
+	// Lambda: it mints a Cloudflare tunnel, serves HTTP behind it, and streams
+	// NDJSON status frames back for as long as the caller holds the request
+	// open — the stream IS the server's lifetime. See handleServe.
+	ws.Route(ws.GET("/serve").Filter(s.verify).To(s.handleServe))
+
 	// Self-issuer (optional): mint a disco-native identity and publish the
 	// discovery + JWKS that verify it. Unauthenticated by design — /token hands
 	// out a fresh, isolated cluster namespace. It takes no body, so accept either
@@ -130,6 +141,116 @@ func (s *Seed) WebService() *restful.WebService {
 		ws.Route(ws.GET("/").To(s.handleJWKS))
 	}
 	return ws
+}
+
+type serveResponse struct {
+	Sub    string `json:"sub"`
+	URL    string `json:"url,omitempty"`
+	Uptime string `json:"uptime"`
+	Status string `json:"status,omitempty"`
+}
+
+func (s *Seed) handleServe(req *restful.Request, resp *restful.Response) {
+	ctx, cancel := context.WithCancelCause(req.Request.Context())
+	defer cancel(nil)
+
+	var status atomic.Pointer[string]
+	var url atomic.Pointer[string]
+
+	setStatus := func(st string) {
+		status.Store(&st)
+		log.Printf("disco: tunnel status: %s", st)
+	}
+
+	setURL := func(u string) {
+		url.Store(&u)
+		log.Printf("disco: tunnel URL: %s", u)
+	}
+
+	go func() {
+		setStatus("Tunnel starting")
+		listener, err := net.Listen("tcp", ":0")
+		if err != nil {
+			cancel(fmt.Errorf("failed to listen on tunnel: %w", err))
+			return
+		}
+		defer listener.Close()
+
+		tun := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithLogger(slog.Default()).WithListener(listener)
+		if u := tun.URL(); u != nil {
+			setURL(u.String())
+		}
+
+		// A per-request mux, not http.HandleFunc: registering on the global
+		// DefaultServeMux would panic on the second /serve request.
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("disco: tunnel request: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+			setStatus(fmt.Sprintf("Served: %s %s from %s at %s", r.Method, r.URL, r.RemoteAddr, time.Now().Format(time.RFC3339)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Tunnel is up"))
+		})
+
+		log.Printf("disco: serving tunnel on %s", tun.Listener().Addr())
+		setStatus(fmt.Sprintf("Tunnel serving on %s", tun.Listener().Addr()))
+		if err := http.Serve(tun.Listener(), mux); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			cancel(fmt.Errorf("failed to serve HTTP on tunnel: %w", err))
+		}
+	}()
+
+	// Headers must precede WriteHeader; net/http ignores changes after the
+	// status line is written. 206 disables response buffering in the LB.
+	resp.Header().Set("Content-Type", "application/x-ndjson")
+	resp.Header().Set("Cache-Control", "no-store")
+	resp.WriteHeader(http.StatusPartialContent)
+
+	// Encode directly rather than via WriteAsJson: the container's pretty-print
+	// would split objects across lines, breaking NDJSON's one-object-per-line
+	// framing. Encode appends the newline delimiter itself.
+	enc := json.NewEncoder(resp)
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	start := time.Now()
+	for {
+		if err := enc.Encode(serveResponse{
+			Sub: sub(req),
+			URL: func() string {
+				if u := url.Load(); u != nil {
+					return *u
+				}
+				return ""
+			}(),
+			Uptime: time.Since(start).Round(time.Second).String(),
+			Status: func() string {
+				if s := status.Load(); s != nil {
+					return *s
+				}
+				return ""
+			}(),
+		}); err != nil {
+			return // client gone
+		}
+		resp.Flush()
+		select {
+		case <-ctx.Done():
+			// A tunnel failure cancels with a cause; a plain client disconnect
+			// (or our deferred cancel) carries context.Canceled and gets no
+			// final error frame.
+			if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
+				log.Printf("disco: serve error: %v", cause)
+				_ = enc.Encode(serveResponse{
+					Sub:    sub(req),
+					Uptime: time.Since(start).Round(time.Second).String(),
+					Status: fmt.Sprintf("Error: %v", cause),
+				})
+				resp.Flush()
+				return
+			}
+			log.Printf("disco: serve done: %v", ctx.Err())
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // claimsAttr is the request attribute the verify filter sets and handlers read:
