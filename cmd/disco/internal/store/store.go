@@ -1,11 +1,11 @@
-// Package store defines the discovery seed's backing-state contract — the two
+// Package store defines the discovery service's backing-state contract — the two
 // primitives the protocol needs, namespaced per cluster identity
 // (the verified JWT sub). Implementations live in subpackages (see store/kvdb).
 //
 // The interface is deliberately narrow so the backing is swappable: kvdb.io
 // today (atomic PATCH "+1" = the claim; prefix list + per-key TTL = the
 // roster); DynamoDB (atomic ADD, query, TTL) or a loopback etcd (txn, lease)
-// would each satisfy it without touching the seed's handlers.
+// would each satisfy it without touching the service's handlers.
 package store
 
 import (
@@ -13,10 +13,10 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented marks a scaffold stub; the seed maps it to HTTP 501.
+// ErrNotImplemented marks a scaffold stub; the service maps it to HTTP 501.
 var ErrNotImplemented = errors.New("not implemented")
 
-// Store is the discovery seed's backing state.
+// Store is the discovery service's backing state.
 type Store interface {
 	// Claim atomically attempts the bootstrap claim for cluster sub. It returns
 	// won=true to exactly one caller — the first — and false to the rest. The

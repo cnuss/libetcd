@@ -1,11 +1,11 @@
-// Command disco is the libetcd discovery seed — the rendezvous service that
+// Command disco is the libetcd discovery service — the rendezvous that
 // lets ephemeral, NAT'd libetcd nodes form a cluster from identical config and
 // zero topology knowledge.
 //
 // It serves three HTTP/1.1 endpoints — claim, register, roster — translating
 // them into kvdb.io operations (https://kvdb.io/docs/api/): an atomic
 // PATCH "+1" is the bootstrap claim (the caller that reads 1 wins), and a
-// TTL'd, prefix-listed key set is the roster of live join targets. The seed
+// TTL'd, prefix-listed key set is the roster of live join targets. The service
 // holds no cluster state of its own and is NOT a raft member of the clusters it
 // brokers, so it has no WAL, no embedded etcd, and no Lambda-freeze concerns.
 //
@@ -17,14 +17,14 @@
 // claim is enforced in kvdb, not in process memory, so there is no split-brain
 // across instances and no reserved-concurrency pin.
 //
-// Authentication is seed-side: nodes carry the cluster JWT as a
-// bearer, the seed verifies it and uses its sub claim as the cluster identity
-// (roster namespace). The kvdb access token is the seed's secret, held in the
+// Authentication is service-side: nodes carry the cluster JWT as a
+// bearer, the service verifies it and uses its sub claim as the cluster identity
+// (roster namespace). The kvdb access token is the service's secret, held in the
 // environment and never exposed to nodes.
 //
 // Layout (internal/, private to this binary):
 //
-//	internal/seed        the go-restful API + JWT gate (the HTTP surface)
+//	internal/ws          the go-restful API + JWT gate (the HTTP surface)
 //	internal/store       the backing-state contract (Store interface)
 //	internal/store/kvdb  the kvdb.io implementation of Store
 package main
@@ -37,8 +37,8 @@ import (
 
 	restful "github.com/emicklei/go-restful/v3"
 
-	"github.com/cnuss/libetcd/cmd/disco/internal/seed"
 	"github.com/cnuss/libetcd/cmd/disco/internal/store/kvdb"
+	"github.com/cnuss/libetcd/cmd/disco/internal/ws"
 )
 
 func main() {
@@ -52,9 +52,9 @@ func main() {
 	// callers without an external IdP. On this deploy the self-issuer URL is
 	// https://disco.nuss.io, so ensureVerifiers dedups it to the in-process
 	// verifier — no JWKS round-trip.
-	srv := seed.New(backing).
+	srv := ws.New(backing).
 		WithIssuer("https://token.actions.githubusercontent.com").
-		WithIssuer(seed.DefaultIssuerURL).
+		WithIssuer(ws.DefaultIssuerURL).
 		WithSelfIssuer()
 	defer srv.Close()
 

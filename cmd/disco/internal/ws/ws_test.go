@@ -1,4 +1,4 @@
-package seed
+package ws
 
 import (
 	"context"
@@ -55,7 +55,7 @@ func (f *fakeStore) Roster(_ context.Context, sub string) ([]string, error) {
 
 // newMockIssuer stands up an OIDC issuer: a discovery document pointing at a
 // JWKS endpoint that publishes one RSA verification key. Returns the signing key
-// + its kid so the test can mint tokens the seed will accept.
+// + its kid so the test can mint tokens the service will accept.
 func newMockIssuer(t *testing.T) (priv *rsa.PrivateKey, kid string, srv *httptest.Server) {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -107,10 +107,10 @@ func signToken(t *testing.T, priv *rsa.PrivateKey, kid, iss, sub string) string 
 	return raw
 }
 
-// TestSeedVerifiedRequests drives the full chain — verify filter against a real
+// TestServiceVerifiedRequests drives the full chain — verify filter against a real
 // (mock) OIDC issuer, then the handler — for each authenticated route, and
 // asserts the verified sub reached the store.
-func TestSeedVerifiedRequests(t *testing.T) {
+func TestServiceVerifiedRequests(t *testing.T) {
 	priv, kid, iss := newMockIssuer(t)
 	defer iss.Close()
 
@@ -247,8 +247,8 @@ func TestVerifyRejectsUntrustedAndForged(t *testing.T) {
 	}
 }
 
-// TestSeedRejectsUnverified covers the fail-closed paths without a valid token.
-func TestSeedRejectsUnverified(t *testing.T) {
+// TestServiceRejectsUnverified covers the fail-closed paths without a valid token.
+func TestServiceRejectsUnverified(t *testing.T) {
 	_, _, iss := newMockIssuer(t)
 	defer iss.Close()
 
@@ -280,7 +280,7 @@ func TestSeedRejectsUnverified(t *testing.T) {
 // TestDiscoveryDescriptor checks the sniff endpoint: unauthenticated, advertises
 // the endpoints, and only lists /token when the self-issuer is enabled.
 func TestDiscoveryDescriptor(t *testing.T) {
-	get := func(srv *Seed) descriptor {
+	get := func(srv *Service) descriptor {
 		t.Helper()
 		c := restful.NewContainer()
 		c.Add(srv.WebService())
@@ -320,7 +320,7 @@ func TestDiscoveryDescriptor(t *testing.T) {
 }
 
 // jwtPayload base64-decodes a JWT's claims segment. The token is freshly minted
-// by the seed under test, so the test trusts it without re-verifying the
+// by the service under test, so the test trusts it without re-verifying the
 // signature — it only inspects the claims.
 func jwtPayload(t *testing.T, token string) map[string]any {
 	t.Helper()
@@ -549,7 +549,7 @@ func TestSelfIssuer(t *testing.T) {
 	}
 
 	// The minted token is accepted on an authenticated route (verified against
-	// the seed's own JWKS), and its sub reaches the store.
+	// the service's own JWKS), and its sub reaches the store.
 	r := jsonReq(http.MethodGet, "/roster", "")
 	r.Header.Set("Authorization", "Bearer "+tok.Token)
 	resp, body = do(t, r)

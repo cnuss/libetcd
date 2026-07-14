@@ -16,15 +16,15 @@
 //   - Register -> PUT   r/<sub>/<id> ?ttl=N          (TTL'd; re-PUT = keepalive)
 //   - Roster   -> GET   ?prefix=r/<sub>/&values=true ([[key,url],...])
 //
-// Auth: the bucket is protected by a kvdb secret_key, and the seed authenticates
+// Auth: the bucket is protected by a kvdb secret_key, and the service authenticates
 // with it via HTTP Basic auth (env DISCO_KVDB_SECRET; username=secret_key, empty
 // password). The secret_key is required because Roster *lists* keys, and per the
 // kvdb docs listing is a secret_key operation — scoped access tokens grant
 // read/write on sub-keys but cannot list (the only token permissions are read
-// and write). So the seed holds the bucket master key. That is acceptable here:
-// the seed is the sole trusted client (nodes never touch kvdb — they speak to
-// the seed with their cluster JWT), and the bucket holds only ephemeral
-// discovery state (claim counters + peer URLs), so the blast radius of a seed
+// and write). So the service holds the bucket master key. That is acceptable here:
+// the service is the sole trusted client (nodes never touch kvdb — they speak to
+// the service with their cluster JWT), and the bucket holds only ephemeral
+// discovery state (claim counters + peer URLs), so the blast radius of a service
 // compromise is bounded to discovery, not application data.
 //
 // Freshness: every request sets the header "Cache-Control: no-cache". kvdb
@@ -154,7 +154,7 @@ func (c *client) Roster(ctx context.Context, sub string) ([]string, error) {
 	return urls, nil
 }
 
-// do builds and sends a kvdb request with the seed's Basic auth and the
+// do builds and sends a kvdb request with the service's Basic auth and the
 // mandatory no-cache header. The caller closes resp.Body.
 func (c *client) do(ctx context.Context, method, path, rawQuery string, body io.Reader) (*http.Response, error) {
 	u := c.base + path

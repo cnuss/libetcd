@@ -1,7 +1,7 @@
-// Package seed serves the disco discovery API: claim, register, and roster,
+// Package ws serves the disco discovery API: claim, register, and roster,
 // each a thin translation of a verified request onto a store.Store operation.
-// The seed holds no cluster state of its own.
-package seed
+// The service holds no cluster state of its own.
+package ws
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -40,8 +39,8 @@ const tokenTTL = time.Hour
 // discoveryTimeout bounds an issuer's OIDC discovery fetch in GetVerifier.
 const discoveryTimeout = 15 * time.Second
 
-// Seed is the discovery rendezvous service — a stateless shim over a Store.
-type Seed struct {
+// Service is the discovery rendezvous — a stateless shim over a Store.
+type Service struct {
 	store   store.Store
 	issuers []string       // OIDC issuers to trust for cluster JWTs
 	issuer  *issuer.Issuer // optional self-issuer: mints + publishes disco-native tokens
@@ -52,15 +51,15 @@ type Seed struct {
 	verifiers sync.Map // issuer URL -> *oidc.IDTokenVerifier
 }
 
-// New returns a Seed backed by the given store.
-func New(s store.Store) *Seed { return &Seed{store: s, issuers: make([]string, 0)} }
+// New returns a Service backed by the given store.
+func New(s store.Store) *Service { return &Service{store: s, issuers: make([]string, 0)} }
 
-func (s *Seed) WithIssuer(iss string) *Seed {
+func (s *Service) WithIssuer(iss string) *Service {
 	s.issuers = append(s.issuers, iss)
 	return s
 }
 
-// WithSelfIssuer makes the seed its own OIDC issuer: it serves /token,
+// WithSelfIssuer makes the service its own OIDC issuer: it serves /token,
 // /.well-known/openid-configuration and the JWKS, and trusts itself when
 // verifying (so disco-minted tokens are accepted alongside external ones).
 //
@@ -68,7 +67,7 @@ func (s *Seed) WithIssuer(iss string) *Seed {
 // generated with a warning if unset) and DISCO_ISSUER_URL (defaults to
 // https://disco.nuss.io). A bad signing key is fatal — misconfiguration should
 // stop startup, not silently disable auth.
-func (s *Seed) WithSelfIssuer() *Seed {
+func (s *Service) WithSelfIssuer() *Service {
 	key, ephemeral, err := issuer.KeyFromEnv()
 	if err != nil {
 		log.Fatalf("disco: signing key: %v", err)
@@ -92,19 +91,19 @@ func (s *Seed) WithSelfIssuer() *Seed {
 	return s
 }
 
-// Close releases the seed's resources. Nothing to release for a stateless shim.
-func (s *Seed) Close() error { return nil }
+// Close releases the service's resources. Nothing to release for a stateless shim.
+func (s *Service) Close() error { return nil }
 
 // WebService builds the disco API: claim/register/roster behind JWT
 // verification, plus an unauthenticated health check.
-func (s *Seed) WebService() *restful.WebService {
+func (s *Service) WebService() *restful.WebService {
 	ws := new(restful.WebService)
 	ws.Path("").Consumes(restful.MIME_JSON).Produces(restful.MIME_JSON)
 
 	ws.Route(ws.GET("/healthz").To(s.handleHealth))
 
 	// Sniff target: an unauthenticated descriptor that identifies this URL as a
-	// libetcd discovery seed and advertises its endpoints. A client points From
+	// libetcd discovery service and advertises its endpoints. A client points From
 	// at the bare URL and probes this to decide discovery-vs-plain-peer.
 	ws.Route(ws.GET(DiscoveryDescriptorPath).To(s.handleDescriptor))
 
@@ -126,6 +125,9 @@ func (s *Seed) WebService() *restful.WebService {
 	// open — the stream IS the server's lifetime. See handleServe.
 	ws.Route(ws.GET("/serve").Filter(s.verify).To(s.handleServe))
 
+	// TODO: document: mints an ephemeral etcd server
+	ws.Route(ws.GET("/new").To(s.handleNew))
+
 	// Self-issuer (optional): mint a disco-native identity and publish the
 	// discovery + JWKS that verify it. Unauthenticated by design — /token hands
 	// out a fresh, isolated cluster namespace. It takes no body, so accept either
@@ -143,6 +145,33 @@ func (s *Seed) WebService() *restful.WebService {
 	return ws
 }
 
+func (s *Service) handleNew(req *restful.Request, resp *restful.Response) {
+	ctx, cancel := context.WithCancelCause(req.Request.Context())
+	defer cancel(nil)
+
+	resp.Header().Set("Content-Type", "application/x-ndjson")
+	resp.Header().Set("Cache-Control", "no-store")
+	resp.WriteHeader(http.StatusPartialContent)
+
+	type payload struct {
+		URL string `json:"message,omitempty"`
+	}
+	var payloadCh = make(chan payload)
+	go func() {
+		payloadCh <- payload{URL: ""}
+		tun := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithLogger(slog.Default())
+		payloadCh <- payload{URL: tun.URL().String()}
+	}()
+
+	enc := json.NewEncoder(resp)
+	for p := range payloadCh {
+		enc.Encode(p)
+		resp.Flush()
+	}
+	<-ctx.Done()
+	log.Printf("disco: new done: %v", ctx.Err())
+}
+
 type serveResponse struct {
 	Sub    string `json:"sub"`
 	URL    string `json:"url,omitempty"`
@@ -150,7 +179,7 @@ type serveResponse struct {
 	Status string `json:"status,omitempty"`
 }
 
-func (s *Seed) handleServe(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleServe(req *restful.Request, resp *restful.Response) {
 	ctx, cancel := context.WithCancelCause(req.Request.Context())
 	defer cancel(nil)
 
@@ -169,14 +198,7 @@ func (s *Seed) handleServe(req *restful.Request, resp *restful.Response) {
 
 	go func() {
 		setStatus("Tunnel starting")
-		listener, err := net.Listen("tcp", ":0")
-		if err != nil {
-			cancel(fmt.Errorf("failed to listen on tunnel: %w", err))
-			return
-		}
-		defer listener.Close()
-
-		tun := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithLogger(slog.Default()).WithListener(listener)
+		tun := libtunnel.New(libtunnel.Cloudflare()).WithContext(ctx).WithLogger(slog.Default())
 		if u := tun.URL(); u != nil {
 			setURL(u.String())
 		}
@@ -259,7 +281,7 @@ func (s *Seed) handleServe(req *restful.Request, resp *restful.Response) {
 const claimsAttr = "claims"
 
 // DiscoveryDescriptorPath is the unauthenticated sniff endpoint; a client probes
-// <url>/.well-known/libetcd-discovery to decide whether a From URL is a seed.
+// <url>/.well-known/libetcd-discovery to decide whether a From URL is a discovery service.
 const DiscoveryDescriptorPath = "/.well-known/libetcd-discovery"
 
 // discoveryVersion is the descriptor's protocol version.
@@ -283,10 +305,10 @@ var (
 	errMint            = errors.New("token minting failed")
 )
 
-// verify is the seed-side JWT gate. The node carries its cluster JWT as a
-// bearer; the seed verifies signature + iss + exp against the trusted issuers'
+// verify is the service-side JWT gate. The node carries its cluster JWT as a
+// bearer; the service verifies signature + iss + exp against the trusted issuers'
 // OIDC/JWKS and extracts sub — the cluster identity that namespaces the roster.
-// Fail-closed: any failure rejects the request, so the seed never serves an
+// Fail-closed: any failure rejects the request, so the service never serves an
 // unauthenticated discovery op.
 //
 // Audience is intentionally NOT enforced (SkipClientIDCheck), and this is
@@ -295,7 +317,7 @@ var (
 // isolated cluster namespace, so such a token can only form or join clusters
 // under its own sub — never touch another's. No expected-aud or allowed-sub
 // policy is planned.
-func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
+func (s *Service) verify(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
 	// Pull the token out of an "Authorization: Bearer <token>" header.
 	const prefix = "Bearer "
 	h := req.HeaderParameter("Authorization")
@@ -367,7 +389,7 @@ func (s *Seed) verify(req *restful.Request, resp *restful.Response, chain *restf
 // as-yet-unverified token, so an unknown one must be rejected (errUntrustedIssuer)
 // before any key fetch. Concurrent first-uses may each build; LoadOrStore keeps
 // one. A discovery failure isn't cached, so a transient outage retries.
-func (s *Seed) GetVerifier(iss string) (*oidc.IDTokenVerifier, error) {
+func (s *Service) GetVerifier(iss string) (*oidc.IDTokenVerifier, error) {
 	if !slices.Contains(s.issuers, iss) {
 		return nil, fmt.Errorf("%w: %q", errUntrustedIssuer, iss)
 	}
@@ -403,7 +425,7 @@ func sub(req *restful.Request) string {
 // handleClaim runs the atomic bootstrap claim: the first caller for this
 // cluster wins (200) and bootstraps; the rest get 409 and fall back to joining
 // the roster. See store.Store.Claim.
-func (s *Seed) handleClaim(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleClaim(req *restful.Request, resp *restful.Response) {
 	won, err := s.store.Claim(req.Request.Context(), sub(req))
 	if err != nil {
 		writeStoreError(resp, err)
@@ -418,7 +440,7 @@ func (s *Seed) handleClaim(req *restful.Request, resp *restful.Response) {
 
 // handleRegister advertises the caller as a live join target with a TTL.
 // Idempotent — re-calling refreshes the TTL (keepalive-as-re-register).
-func (s *Seed) handleRegister(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleRegister(req *restful.Request, resp *restful.Response) {
 	var body registerRequest
 	if err := req.ReadEntity(&body); err != nil || body.URL == "" {
 		_ = resp.WriteError(http.StatusBadRequest, errMissingURL)
@@ -432,7 +454,7 @@ func (s *Seed) handleRegister(req *restful.Request, resp *restful.Response) {
 }
 
 // handleRoster returns the current live join-target URLs for this cluster.
-func (s *Seed) handleRoster(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleRoster(req *restful.Request, resp *restful.Response) {
 	urls, err := s.store.Roster(req.Request.Context(), sub(req))
 	if err != nil {
 		writeStoreError(resp, err)
@@ -443,15 +465,15 @@ func (s *Seed) handleRoster(req *restful.Request, resp *restful.Response) {
 
 // handleHealth is an unauthenticated liveness probe (used by rowdy / the
 // platform health check).
-func (s *Seed) handleHealth(_ *restful.Request, resp *restful.Response) {
+func (s *Service) handleHealth(_ *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(message{Message: "ok"})
 }
 
 // handleDescriptor serves the discovery descriptor a client sniffs to recognize
-// this URL as a libetcd discovery seed. Always served (discovery works with
+// this URL as a libetcd discovery service. Always served (discovery works with
 // external JWTs too); token is advertised only when the self-issuer is enabled,
 // since /token 404s otherwise.
-func (s *Seed) handleDescriptor(_ *restful.Request, resp *restful.Response) {
+func (s *Service) handleDescriptor(_ *restful.Request, resp *restful.Response) {
 	d := descriptor{
 		Discovery: discoveryVersion,
 		Userinfo:  userinfoPath,
@@ -470,7 +492,7 @@ func (s *Seed) handleDescriptor(_ *restful.Request, resp *restful.Response) {
 // object with sub required (the standard UserInfo response). A joining node's
 // /join handler forwards an incoming join JWT here to verify it and read back
 // sub — the cluster identity it matches against — without doing crypto itself.
-func (s *Seed) handleUserinfo(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleUserinfo(req *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(claims(req))
 }
 
@@ -478,7 +500,7 @@ func (s *Seed) handleUserinfo(req *restful.Request, resp *restful.Response) {
 // it. Unauthenticated: each call yields a new random sub (an isolated cluster
 // namespace), so handing it out freely only lets a caller form/join its own
 // cluster. Share the returned token across the nodes of one cluster.
-func (s *Seed) handleToken(req *restful.Request, resp *restful.Response) {
+func (s *Service) handleToken(req *restful.Request, resp *restful.Response) {
 	sub, err := issuer.NewRandomSub()
 	if err != nil {
 		_ = resp.WriteError(http.StatusInternalServerError, errMint)
@@ -538,21 +560,21 @@ var (
 )
 
 // handleDiscovery serves the issuer's OpenID Provider configuration, augmented
-// with the seed's userinfo_endpoint so disco advertises a conformant OIDC
-// UserInfo endpoint (the path is the seed's, built on the issuer's URL).
-func (s *Seed) handleDiscovery(_ *restful.Request, resp *restful.Response) {
+// with the service's userinfo_endpoint so disco advertises a conformant OIDC
+// UserInfo endpoint (the path is the service's, built on the issuer's URL).
+func (s *Service) handleDiscovery(_ *restful.Request, resp *restful.Response) {
 	d := s.issuer.Discovery()
 	d["userinfo_endpoint"] = s.issuer.URL() + userinfoPath
 	_ = resp.WriteAsJson(d)
 }
 
 // handleJWKS serves the issuer's public verification keys.
-func (s *Seed) handleJWKS(_ *restful.Request, resp *restful.Response) {
+func (s *Service) handleJWKS(_ *restful.Request, resp *restful.Response) {
 	_ = resp.WriteAsJson(s.issuer.JWKS())
 }
 
 // writeStoreError maps a Store error to a status: scaffold stubs surface as 501,
-// anything else as a 502 (the seed's backing failed).
+// anything else as a 502 (the service's backing failed).
 func writeStoreError(resp *restful.Response, err error) {
 	if errors.Is(err, store.ErrNotImplemented) {
 		_ = resp.WriteError(http.StatusNotImplemented, err)

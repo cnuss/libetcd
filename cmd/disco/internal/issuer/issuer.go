@@ -1,4 +1,4 @@
-// Package issuer lets the disco seed act as its own OIDC issuer: it mints short
+// Package issuer lets the disco service act as its own OIDC issuer: it mints short
 // JWTs under a random, self-namespaced identity and publishes the discovery +
 // JWKS documents needed to verify them. This gives callers without an external
 // IdP (e.g. a runner with no GitHub OIDC token) a disco-native cluster identity:
@@ -97,7 +97,7 @@ func (i *Issuer) Discovery() map[string]any {
 	}
 }
 
-// Well-known paths the seed serves for this issuer.
+// Well-known paths the service serves for this issuer.
 const (
 	DiscoveryPath = "/.well-known/openid-configuration"
 	JWKSPath      = "/.well-known/jwks.json"
