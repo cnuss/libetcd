@@ -3,7 +3,7 @@ module github.com/cnuss/libetcd/cmd/disco
 go 1.26
 
 require (
-	github.com/cnuss/libtunnel v0.0.23
+	github.com/cnuss/libtunnel v0.0.25
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/emicklei/go-restful/v3 v3.13.0
 	github.com/go-jose/go-jose/v4 v4.1.4
@@ -69,9 +69,9 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260226221140-a57be14db171 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
-	google.golang.org/grpc v1.81.1 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	nhooyr.io/websocket v1.8.7 // indirect
