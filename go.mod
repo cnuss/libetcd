@@ -5,16 +5,16 @@ go 1.26
 require (
 	github.com/coreos/go-semver v0.3.1
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
-	go.etcd.io/etcd/api/v3 v3.7.0
-	go.etcd.io/etcd/client/pkg/v3 v3.7.0
-	go.etcd.io/etcd/client/v3 v3.7.0
-	go.etcd.io/etcd/etcdutl/v3 v3.7.0
-	go.etcd.io/etcd/pkg/v3 v3.7.0
-	go.etcd.io/etcd/server/v3 v3.7.0
+	go.etcd.io/etcd/api/v3 v3.7.1
+	go.etcd.io/etcd/client/pkg/v3 v3.7.1
+	go.etcd.io/etcd/client/v3 v3.7.1
+	go.etcd.io/etcd/etcdutl/v3 v3.7.1
+	go.etcd.io/etcd/pkg/v3 v3.7.1
+	go.etcd.io/etcd/server/v3 v3.7.1
 	go.etcd.io/raft/v3 v3.7.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.57.0
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )
 
