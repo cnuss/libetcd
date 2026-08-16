@@ -52,10 +52,25 @@ jobs:
       - id: identity
         uses: cnuss/actions-identity@v1
 
+      # Persist this node's data dir across runs (#135 resumability): a redispatch
+      # restores the prior run's WAL so the member boots from it instead of joining
+      # fresh. The key carries run_id so every run saves a new snapshot; the
+      # restore-keys prefix falls back to this node's latest prior dir on restore.
+      - name: node ${{ matrix.node }} data dir
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ github.workspace }}/fleet-data/node-${{ matrix.node }}
+          key: fleet-data-node-${{ matrix.node }}-${{ github.run_id }}
+          restore-keys: |
+            fleet-data-node-${{ matrix.node }}-
+
       - name: fleet node ${{ matrix.node }}
         working-directory: e2e
         env:
           LIBETCD_E2E_FLEET: "1"
+          # Persistent per-node data dir (restored by the cache step above) so a
+          # killed/redispatched node resumes over its WAL rather than re-joining.
+          LIBETCD_DATA_DIR: ${{ github.workspace }}/fleet-data/node-${{ matrix.node }}
           # TODO: passing the fleet size explicitly (and keeping it in sync with
           # the matrix length) is interim — we'll derive N a different way later.
           # Prove this hardcoded path works first.
